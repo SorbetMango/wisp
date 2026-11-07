@@ -1729,6 +1729,12 @@ fn at_bottom_edge(cursor: POINT, zone: u32) -> bool {
         if !GetMonitorInfoW(monitor, &mut info).as_bool() {
             return false;
         }
+        // Most polls find the pointer far from the edge: skip asking for the
+        // scale then. The widest zone at the largest scale Windows offers
+        // (500%) is well within this.
+        if cursor.y < info.rcMonitor.bottom - MAX_EDGE as i32 * 5 {
+            return false;
+        }
         let (mut dpi, mut dpi_y) = (96, 96);
         let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut dpi_y);
         cursor.y >= info.rcMonitor.bottom - edge_pixels(zone, dpi)
