@@ -12,6 +12,23 @@ const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 /// Values for missing keys that differ from the default config, shared with wisp-settings.
 const MISSING_KEYS: &str = include_str!("config-0.3.toml");
 
+/// Added to a config written before `dock_edge` existed, as in the default config.
+const DOCK_EDGE_BLOCK: &str = "# How close to the bottom edge of a screen the pointer has to get to bring the
+# dock up, in device-independent pixels (96 per inch). Larger values show the
+# dock sooner; the largest is 64.
+dock_edge = 24
+";
+
+/// The config with the settings it lacks added at the end, or `None` when it
+/// has them all or cannot be read.
+fn with_missing_keys(text: &str) -> Option<String> {
+    let table = toml::from_str::<toml::Table>(text).ok()?;
+    if table.contains_key("dock_edge") {
+        return None;
+    }
+    Some(format!("{}\n\n{DOCK_EDGE_BLOCK}", text.trim_end()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -88,6 +105,13 @@ impl Config {
         match Self::parse(&text) {
             Ok(mut config) => {
                 config.max_results = config.max_results.clamp(1, 20);
+                // Show settings added since the file was written.
+                if let Some(updated) = with_missing_keys(&text) {
+                    let tmp = path.with_extension("toml.tmp");
+                    if std::fs::write(&tmp, updated).is_ok() {
+                        let _ = std::fs::rename(&tmp, &path);
+                    }
+                }
                 (config, None)
             }
             Err(e) => (Config::default(), Some(format!("config.toml: {}", e.message()))),
@@ -107,6 +131,21 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_config_gets_the_dock_edge_setting_once() {
+        // The text added is the same as in the default config.
+        assert!(DEFAULT_CONFIG.contains(DOCK_EDGE_BLOCK));
+        let old = "hotkey = \"Alt+Space\"\n# my note\n";
+        let updated = with_missing_keys(old).unwrap();
+        assert!(updated.starts_with("hotkey = \"Alt+Space\"\n# my note\n\n# How close"));
+        assert_eq!(Config::parse(&updated).unwrap().dock_edge, 24);
+        // Nothing more to add the second time, or when the user has set it.
+        assert_eq!(with_missing_keys(&updated), None);
+        assert_eq!(with_missing_keys("dock_edge = 40"), None);
+        // A broken file is left alone.
+        assert_eq!(with_missing_keys("dock_edge = "), None);
+    }
 
     #[test]
     fn legacy_pins_are_ignored() {

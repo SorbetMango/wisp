@@ -8,7 +8,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 - **Rearrange the dock.** Drag an app to another place.
 - **Pin apps to the dock.** Right-click an app and choose **Pin to dock**. Pinned apps stay in the dock, with a click to launch them, and keep their order between runs. They are saved in `dock-pins.toml`.
-- **The dock comes up sooner.** It now appears when the pointer gets near the bottom edge, not only when it touches it. The new `dock_edge` setting changes the distance.
+- **The dock comes up sooner.** It now appears when the pointer gets near the bottom edge, not only when it touches it. The new `dock_edge` setting changes the distance. Wisp adds it, with an explanation, to the end of your existing `config.toml`.
 
 ## 0.5.0 - 2026-11-07
 
