@@ -135,7 +135,8 @@ mod tests {
     #[test]
     fn an_older_config_gets_the_dock_edge_setting_once() {
         // The text added is the same as in the default config.
-        assert!(DEFAULT_CONFIG.contains(DOCK_EDGE_BLOCK));
+        // A Windows checkout may end its lines with CRLF.
+        assert!(DEFAULT_CONFIG.replace("\r\n", "\n").contains(DOCK_EDGE_BLOCK));
         let old = "hotkey = \"Alt+Space\"\n# my note\n";
         let updated = with_missing_keys(old).unwrap();
         assert!(updated.starts_with("hotkey = \"Alt+Space\"\n# my note\n\n# How close"));
