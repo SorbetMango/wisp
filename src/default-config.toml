@@ -44,3 +44,8 @@ dock = true
 # false, the dock stays on the main screen and windows stop above it while the
 # taskbar is hidden.
 dock_autohide = true
+
+# How close to the bottom edge of a screen the pointer has to get to bring the
+# dock up, in device-independent pixels (96 per inch). Larger values show the
+# dock sooner; the largest is 64.
+dock_edge = 24

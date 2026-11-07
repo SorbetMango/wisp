@@ -40,6 +40,20 @@ pub fn hit(x: f32, y: f32, running: usize) -> Option<usize> {
     (0..1 + running).find(|&i| (left(i)..left(i) + SLOT).contains(&x))
 }
 
+/// The app slot (1 is the first app; 0 is the launcher button) under `x`
+/// while dragging an app, kept within the `running` apps shown.
+pub fn slot_at(x: f32, running: usize) -> usize {
+    (((x - PAD) / SLOT).floor().max(1.0) as usize).min(running.max(1))
+}
+
+/// Moves the item at `from` to `to`, shifting the ones between.
+pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from != to && from < items.len() && to < items.len() {
+        let item = items.remove(from);
+        items.insert(to, item);
+    }
+}
+
 pub const CHEVRON_W: f32 = 28.0;
 pub const TRAY_W: f32 = 32.0;
 pub const VOLUME_W: f32 = 46.0;
@@ -241,6 +255,30 @@ mod tests {
         assert_eq!(stable_order(previous, current, |a, b| a == b), ["a", "b", "c", "d"]);
         // Closed apps drop out and leaving ones keep their relative order.
         assert_eq!(stable_order(vec!["a", "b"], vec!["b", "c"], |a, b| a == b), ["b", "c"]);
+    }
+    #[test]
+    fn dragging_picks_a_slot_among_the_apps() {
+        // The launcher button is slot 0 and never a drop target.
+        assert_eq!(slot_at(left(0) + SLOT / 2.0, 3), 1);
+        assert_eq!(slot_at(-50.0, 3), 1);
+        assert_eq!(slot_at(left(2) + 1.0, 3), 2);
+        assert_eq!(slot_at(left(3) + SLOT - 1.0, 3), 3);
+        // Past the last app, and over the status parts, it is the last slot.
+        assert_eq!(slot_at(1000.0, 3), 3);
+        assert_eq!(slot_at(10.0, 0), 1);
+    }
+    #[test]
+    fn moving_an_item_shifts_the_ones_between() {
+        let mut items = vec!["a", "b", "c", "d"];
+        move_item(&mut items, 0, 2);
+        assert_eq!(items, ["b", "c", "a", "d"]);
+        move_item(&mut items, 3, 0);
+        assert_eq!(items, ["d", "b", "c", "a"]);
+        // Out of range or unchanged leaves the list alone.
+        move_item(&mut items, 1, 1);
+        move_item(&mut items, 1, 9);
+        move_item(&mut items, 9, 1);
+        assert_eq!(items, ["d", "b", "c", "a"]);
     }
     #[test]
     fn matches_full_paths_and_store_ids() {

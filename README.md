@@ -40,14 +40,15 @@ To update, open the settings app and select **Update** on the **About** page.
 
 ## Dock
 
-The dock appears when the pointer touches the bottom edge of a screen, and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings. Maximized windows then stop above it.
+The dock appears when the pointer gets near the bottom edge of a screen (`dock_edge` sets how near), and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings. Maximized windows then stop above it.
 
 | Do this | To |
 | --- | --- |
 | Click an app | Switch to it |
 | Click the app in front | Minimize it |
 | Middle-click an app | Open a new window of it |
-| Right-click an app | Close its windows |
+| Right-click an app | Pin it to the dock or unpin it, or close its windows |
+| Drag an app | Move it to another place. Pinned apps keep their order. |
 | Click a tray icon | Use it as you would on the taskbar |
 | Click **⌄** | Show the hidden tray icons |
 | Right-click **⌄** | Show the taskbar, or open taskbar settings |
@@ -120,6 +121,7 @@ Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. T
 | `hotkey` | `"Alt+Space"` | Shows or hides the launcher |
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
+| `dock_edge` | `24` | How close to the bottom edge the pointer must get to bring the dock up, in pixels at 100% scale (2 to 64) |
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `position` | `"bottom"` | `"bottom"` grows the launcher from the dock; `"center"` opens it in the middle |
 | `theme` | `"system"` | `"system"`, `"dark"` or `"light"` |

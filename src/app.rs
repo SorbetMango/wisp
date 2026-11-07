@@ -614,6 +614,7 @@ impl Launcher {
             // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarHider::is_active));
             dock.set_autohide(self.config.dock_autohide);
+            dock.set_edge(self.config.dock_edge);
             if self.visible { dock.hide() } else { dock.show() }
         }
         self.sync_reserve();

@@ -4,6 +4,8 @@
 mod desktops;
 #[path = "dock/logic.rs"]
 mod logic;
+#[path = "dock/pins.rs"]
+mod pins;
 #[path = "dock/render.rs"]
 mod render;
 #[path = "dock/space.rs"]
@@ -31,10 +33,10 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
-    VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
 };
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -66,6 +68,11 @@ const POLL_TIMER: usize = 102;
 const POLL_MS: u32 = 100;
 /// Polls the pointer may spend away from the dock before it hides.
 const HIDE_AFTER: u8 = 5;
+/// How close to the bottom edge the pointer reveals the dock, in DIPs, unless
+/// the config says otherwise. It stays within the dock's own height so the
+/// pointer lands on the dock once it has slid in.
+pub const DEFAULT_EDGE: u32 = 24;
+const MAX_EDGE: u32 = 64;
 /// Steps the slide-in animation.
 const SLIDE_TIMER: usize = 103;
 const SLIDE_MS: f32 = 180.0;
@@ -110,6 +117,15 @@ struct State {
     /// Whether the dock hides until the pointer touches a bottom edge. When
     /// false it stays on the primary screen.
     autohide: bool,
+    /// How close to the bottom edge the pointer reveals a hidden dock, in DIPs.
+    edge: u32,
+    /// Apps kept in the dock while they are not running, in dock order.
+    pinned: Vec<AppEntry>,
+    /// The app pressed with the left button, and the pointer's x where it was
+    /// pressed, in client pixels, until the button is released.
+    press: Option<(String, i32)>,
+    /// The pressed app is being dragged to another place.
+    dragging: bool,
     suspended: bool,
     frame_paced: bool,
     held_dpi: Option<u32>,
@@ -195,6 +211,10 @@ impl Dock {
             away: 0,
             held: false,
             autohide: true,
+            edge: DEFAULT_EDGE,
+            pinned: pins::load(),
+            press: None,
+            dragging: false,
             suspended: false,
             frame_paced: false,
             held_dpi: None,
@@ -547,6 +567,11 @@ impl Dock {
         }
     }
 
+    /// Sets how close to the bottom edge the pointer reveals the dock, in DIPs.
+    pub fn set_edge(&mut self, edge: u32) {
+        self.state.borrow_mut().edge = edge.clamp(2, MAX_EDGE);
+    }
+
     /// Whether the dock stays on screen instead of auto-hiding.
     pub fn stays_visible(&self) -> bool {
         !self.state.borrow().autohide
@@ -557,6 +582,7 @@ impl Dock {
         let mut s = self.state.borrow_mut();
         s.close_flyout();
         s.hide_tip();
+        s.finish_press();
         s.visible = false;
         s.stop_slide();
         s.revealed = false;
@@ -691,6 +717,20 @@ impl State {
                 });
             }
         }
+        // Pinned apps come first in their saved order, running or not. Later
+        // refreshes keep whatever order the dock has by then.
+        let mut ordered = Vec::with_capacity(items.len() + self.pinned.len());
+        for pin in &self.pinned {
+            match items.iter().position(|item| item.app.id.eq_ignore_ascii_case(&pin.id)) {
+                Some(at) => ordered.push(items.remove(at)),
+                None => ordered.push(Item {
+                    app: pin.clone(),
+                    windows: Vec::new(),
+                }),
+            }
+        }
+        ordered.append(&mut items);
+        let items = ordered;
         self.items = logic::stable_order(std::mem::take(&mut self.items), items, |old, new| {
             old.app.id.eq_ignore_ascii_case(&new.app.id)
         });
@@ -751,7 +791,7 @@ impl State {
             // Dragging along the bottom edge, such as a scroll bar, is not a request for the dock.
             let dragging =
                 unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 };
-            if !dragging && at_bottom_edge(cursor) && !fullscreen_foreground(self.hwnd) {
+            if !dragging && at_bottom_edge(cursor, self.edge) && !fullscreen_foreground(self.hwnd) {
                 self.reveal();
             }
             return;
@@ -776,6 +816,7 @@ impl State {
         // The dock stays while its flyout is open.
         let near = !self.autohide
             || self.held
+            || self.dragging
             || self.flyout_open
             || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack;
         if near {
@@ -1512,10 +1553,22 @@ impl State {
             return;
         };
         let windows: Vec<_> = item.windows.iter().map(|window| window.hwnd).collect();
+        let id = item.app.id.clone();
+        let pinned = self.pinned.iter().any(|pin| pin.id.eq_ignore_ascii_case(&id));
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
             };
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                1,
+                if pinned {
+                    w!("Unpin from dock")
+                } else {
+                    w!("Pin to dock")
+                },
+            );
             let _ = AppendMenuW(
                 menu,
                 MF_STRING | if windows.is_empty() { MF_GRAYED } else { MF_ENABLED },
@@ -1537,13 +1590,113 @@ impl State {
             )
             .0;
             let _ = DestroyMenu(menu);
-            if command == 2 {
+            if command == 1 {
+                self.toggle_pin(&id);
+            } else if command == 2 {
                 for hwnd in windows {
                     let _ = open_windows::close(hwnd);
                 }
             }
         }
         self.refresh();
+    }
+
+    /// Pins the app to the dock, or unpins it. A pinned app stays when it is
+    /// not running; an unpinned one that is not running leaves.
+    fn toggle_pin(&mut self, id: &str) {
+        if let Some(at) = self.pinned.iter().position(|pin| pin.id.eq_ignore_ascii_case(id)) {
+            self.pinned.remove(at);
+        } else if let Some(item) = self.items.iter().find(|item| item.app.id.eq_ignore_ascii_case(id)) {
+            self.pinned.push(item.app.clone());
+        }
+        self.save_pins();
+    }
+
+    /// Saves the pins in the order the dock shows them.
+    fn save_pins(&mut self) {
+        let mut ordered: Vec<AppEntry> = self
+            .items
+            .iter()
+            .filter(|item| self.pinned.iter().any(|pin| pin.id.eq_ignore_ascii_case(&item.app.id)))
+            .map(|item| item.app.clone())
+            .collect();
+        // A pin the dock isn't showing right now keeps its place at the end.
+        for pin in &self.pinned {
+            if !ordered.iter().any(|app| app.id.eq_ignore_ascii_case(&pin.id)) {
+                ordered.push(pin.clone());
+            }
+        }
+        self.pinned = ordered;
+        pins::save(&self.pinned);
+    }
+
+    /// Remembers the app under the pointer, in case this press becomes a drag.
+    fn press(&mut self, lp: LPARAM) {
+        self.finish_press();
+        let Some(index) = self.hit(lp).filter(|&index| index > 0) else {
+            return;
+        };
+        if let Some(item) = self.items.get(index - 1 + self.scroll) {
+            self.press = Some((item.app.id.clone(), (lp.0 as i16).into()));
+            unsafe {
+                SetCapture(self.hwnd);
+            }
+        }
+    }
+
+    /// Follows the pointer while an app is dragged, moving it to the slot
+    /// under the pointer. Returns whether a drag is under way, in which case
+    /// the pointer is not hovering anything.
+    fn drag_to(&mut self, lp: LPARAM) -> bool {
+        let Some((id, start)) = self.press.clone() else {
+            return false;
+        };
+        // A release that never reached us, such as one over another window's menu.
+        if unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0 {
+            self.finish_press();
+            return false;
+        }
+        let x: i32 = (lp.0 as i16).into();
+        if !self.dragging {
+            let threshold = unsafe { GetSystemMetrics(SM_CXDRAG) }.max(4);
+            if (x - start).abs() < threshold {
+                return false;
+            }
+            self.dragging = true;
+            self.hide_tip();
+        }
+        let slot = logic::slot_at(x as f32 * 96.0 / self.dpi as f32, self.count());
+        let to = slot - 1 + self.scroll;
+        if let Some(from) = self.items.iter().position(|item| item.app.id == id) {
+            logic::move_item(&mut self.items, from, to);
+        }
+        self.hover_part = None;
+        if self.hover != Some(slot) {
+            self.hover = Some(slot);
+            self.animate_hover();
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+        true
+    }
+
+    /// Ends a press. A drag keeps the new order, and pins follow it. Returns
+    /// whether it was a drag, which is not also a click.
+    fn finish_press(&mut self) -> bool {
+        let dragged = std::mem::take(&mut self.dragging);
+        if self.press.take().is_some() {
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+        }
+        if dragged {
+            self.save_pins();
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+        }
+        dragged
     }
 }
 
@@ -1565,16 +1718,27 @@ fn window_aumid(hwnd: HWND) -> Option<String> {
     }
 }
 
-fn at_bottom_edge(cursor: POINT) -> bool {
+/// Whether the pointer is within `zone` DIPs of the bottom of the screen it is on.
+fn at_bottom_edge(cursor: POINT, zone: u32) -> bool {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
     unsafe {
-        GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mut info).as_bool()
-            && cursor.y >= info.rcMonitor.bottom - 2
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return false;
+        }
+        let (mut dpi, mut dpi_y) = (96, 96);
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut dpi_y);
+        cursor.y >= info.rcMonitor.bottom - edge_pixels(zone, dpi)
             && (info.rcMonitor.left..info.rcMonitor.right).contains(&cursor.x)
     }
+}
+
+/// The edge zone in physical pixels, at least one.
+fn edge_pixels(zone: u32, dpi: u32) -> i32 {
+    ((zone as f32 * dpi.max(96) as f32 / 96.0).round() as i32).max(1)
 }
 
 fn fullscreen_foreground(dock: HWND) -> bool {
@@ -1725,7 +1889,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
+                WM_LBUTTONDOWN => {
+                    s.press(lp);
+                    return LRESULT(0);
+                }
                 WM_MOUSEMOVE => {
+                    if s.drag_to(lp) {
+                        return LRESULT(0);
+                    }
                     let hover = s.hit(lp);
                     let hover_part = s.hit_part(lp);
                     if s.hover != hover || s.hover_part != hover_part {
@@ -1756,6 +1927,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_LBUTTONUP | WM_MBUTTONUP => {
+                    if msg == WM_LBUTTONUP && s.finish_press() {
+                        return LRESULT(0);
+                    }
                     // The dock never takes the focus, so the flyout can't see this click.
                     if s.hit_part(lp) != Some(logic::Part::Chevron) {
                         s.close_flyout();
