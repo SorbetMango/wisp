@@ -1,0 +1,18 @@
+name: Perf demo
+
+# Fork-only helper: builds the launcher demo with frame tracing.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --example launcher_demo --features perf-trace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-demo
+          path: target/release/examples/launcher_demo.exe
