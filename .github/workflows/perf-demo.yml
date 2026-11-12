@@ -2,6 +2,8 @@ name: Perf demo
 
 # Fork-only helper: builds the launcher demo with frame tracing.
 on:
+  push:
+    branches: ["ci/**"]
   workflow_dispatch:
 
 jobs:
