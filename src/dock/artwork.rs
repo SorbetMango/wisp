@@ -19,8 +19,11 @@ pub struct Artwork {
     posted: Arc<AtomicBool>,
 }
 impl Artwork {
-    pub fn request(&mut self, hwnd: HWND, id: &str, path: &str, size: i32) -> Option<Arc<IconPixels>> {
-        let key = (id.to_owned(), size);
+    /// The artwork at `path`, once it is loaded. Keyed by the path and not the
+    /// app: a window is first shown with its program's icon when it names an
+    /// app the dock doesn't know yet, and gets the app's own icon afterwards.
+    pub fn request(&mut self, hwnd: HWND, path: &str, size: i32) -> Option<Arc<IconPixels>> {
+        let key = (path.to_owned(), size);
         if let Some(pixels) = self.cache.get(&key) {
             return pixels.clone();
         }
@@ -92,10 +95,30 @@ mod tests {
     #[test]
     fn failed_sizes_are_cached_separately() {
         let mut artwork = Artwork::default();
-        artwork.cache.insert(("app".into(), 32), None);
-        assert!(artwork.cache.contains_key(&("app".into(), 32)));
-        assert!(!artwork.cache.contains_key(&("app".into(), 48)));
-        assert!(artwork.request(HWND::default(), "app", "missing", 32).is_none());
+        artwork.cache.insert(("missing".into(), 32), None);
+        assert!(artwork.cache.contains_key(&("missing".into(), 32)));
+        assert!(!artwork.cache.contains_key(&("missing".into(), 48)));
+        assert!(artwork.request(HWND::default(), "missing", 32).is_none());
+        assert!(artwork.worker.is_none());
+    }
+
+    #[test]
+    fn an_app_matched_later_gets_its_own_artwork() {
+        // The same app ID first resolves to its program, then to its Start menu entry.
+        let mut artwork = Artwork::default();
+        let program = Arc::new(IconPixels {
+            width: 1,
+            height: 1,
+            bgra: vec![0; 4],
+        });
+        artwork.cache.insert(("browser.exe".into(), 32), Some(program.clone()));
+        artwork
+            .cache
+            .insert(("shell:AppsFolder/Browser._crx_app".into(), 32), None);
+        let found = artwork.request(HWND::default(), "browser.exe", 32);
+        assert!(found.is_some_and(|pixels| Arc::ptr_eq(&pixels, &program)));
+        let entry = artwork.request(HWND::default(), "shell:AppsFolder/Browser._crx_app", 32);
+        assert!(entry.is_none());
         assert!(artwork.worker.is_none());
     }
 }
