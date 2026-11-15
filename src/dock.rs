@@ -2086,7 +2086,7 @@ impl State {
                         .path
                         .clone()
                         .unwrap_or_else(|| format!("shell:AppsFolder\\{}", item.app.id));
-                    if let Some(pixels) = self.artwork.request(self.hwnd, &item.app.id, &path, size) {
+                    if let Some(pixels) = self.artwork.request(self.hwnd, &path, size) {
                         self.icons.insert(item.app.id.clone(), pixels);
                     }
                 }
