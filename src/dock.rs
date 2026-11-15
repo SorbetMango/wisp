@@ -2288,7 +2288,7 @@ impl State {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
             Some(tray::Tip::Chevron) => self.tray_host.is_none(),
-            Some(tray::Tip::Status(_)) => false,
+            Some(tray::Tip::Status(_) | tray::Tip::Timer) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
