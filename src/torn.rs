@@ -541,6 +541,45 @@ impl Row {
     }
 }
 
+/// The card above the dock: its width, padding and row heights, in DIPs.
+pub const CARD_W: f32 = 248.0;
+pub const CARD_PAD: f32 = 12.0;
+const CARD_ROW: f32 = 22.0;
+const CARD_METER_ROW: f32 = 31.0;
+
+impl Row {
+    pub fn card_height(&self) -> f32 {
+        if self.meter.is_some() { CARD_METER_ROW } else { CARD_ROW }
+    }
+}
+
+/// The compact card the dock opens above the Torn status: the panel's rows
+/// without the ones that only matter in the launcher.
+pub fn card(snapshot: &Snapshot, now: u64) -> Vec<Row> {
+    let mut rows = rows(snapshot, now);
+    rows.retain(|row| !matches!(row.id, "open" | "updated") && !(row.id == "unread" && row.value == "None"));
+    for row in &mut rows {
+        // The card has no room for "cooldown" three times.
+        if let Some(short) = row.label.strip_suffix(" cooldown") {
+            row.label = short.to_string();
+        }
+        match row.id {
+            // The status alone; the card belongs to one player.
+            "status" => row.label = std::mem::take(&mut row.value),
+            "war" => {
+                row.label = "War".to_string();
+                row.detail.clear();
+            }
+            _ => {}
+        }
+    }
+    rows
+}
+
+pub fn card_height(rows: &[Row]) -> f32 {
+    2.0 * CARD_PAD + rows.iter().map(Row::card_height).sum::<f32>()
+}
+
 /// The launcher's Torn panel at `now`.
 pub fn rows(snapshot: &Snapshot, now: u64) -> Vec<Row> {
     let open = Row {
@@ -958,6 +997,14 @@ mod tests {
         let chain = panel.iter().find(|row| row.id == "chain").unwrap();
         assert_eq!((chain.meter, chain.value.as_str()), (Some(48), "120/250"));
         assert!(panel.iter().any(|row| row.id == "war" && row.value == "15200 : 13400"));
+        let card = card(&both, 5000);
+        assert!(card.iter().all(|row| !matches!(row.id, "open" | "updated" | "unread")));
+        assert!(card.iter().any(|row| row.label == "Drug" && row.value == "2:45:10"));
+        assert_eq!(
+            card_height(&card),
+            2.0 * CARD_PAD + card.iter().map(Row::card_height).sum::<f32>()
+        );
+        assert!(card_height(&card) < 320.0);
         let tip = tip(&with(user()), 5000);
         assert!(tip.contains("Cash $145,250,000") && tip.contains("Energy 120/150, full in 30:00"));
     }

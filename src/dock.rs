@@ -492,6 +492,8 @@ struct State {
     /// Lists every notification icon above the chevron.
     flyout: HWND,
     flyout_open: bool,
+    /// The open flyout shows the Torn card instead of the hidden icons.
+    flyout_torn: bool,
     flyout_hover: Option<usize>,
     flyout_renderer: render::Renderer,
     tip: HWND,
@@ -761,6 +763,7 @@ impl Dock {
             inline: Vec::new(),
             flyout: HWND::default(),
             flyout_open: false,
+            flyout_torn: false,
             flyout_hover: None,
             flyout_renderer: render::Renderer::new()?,
             tip: HWND::default(),
@@ -1394,6 +1397,7 @@ impl State {
             tray,
             inline,
             flyout_open,
+            flyout_torn,
             torn,
             ..
         } = self;
@@ -1415,7 +1419,7 @@ impl State {
             parts: &parts,
             tray,
             inline,
-            flyout_open: *flyout_open,
+            flyout_open: *flyout_open && !*flyout_torn,
             timer: &timer,
             torn,
         };
@@ -2177,6 +2181,10 @@ impl State {
 
     /// Each second: counts Torn's timers down and redraws the running timers.
     fn tick_modules(&mut self) {
+        if self.flyout_open && self.flyout_torn {
+            // The card's timers count down, and its rows come and go.
+            self.layout_flyout();
+        }
         if self.torn_enabled {
             let chips = Self::torn_chips();
             if chips != self.torn {
@@ -2234,6 +2242,16 @@ impl State {
         }
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+        // For screenshots: WISP_TORN_CARD opens the card once, without taking the focus.
+        static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if self.torn_enabled
+            && crate::torn::snapshot().user.is_some()
+            && std::env::var_os("WISP_TORN_CARD").is_some()
+            && !SHOWN.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.held = true;
+            self.toggle_torn_card();
         }
     }
 
@@ -2313,7 +2331,7 @@ impl State {
                 rects.icons.insert(self.tray[index].icon.key(), rect);
             }
         }
-        if self.flyout_open {
+        if self.flyout_open && !self.flyout_torn {
             for (index, shown) in self.tray.iter().enumerate() {
                 rects.icons.insert(shown.icon.key(), self.cell_rect(index));
             }
@@ -2378,11 +2396,26 @@ impl State {
     }
 
     fn toggle_flyout(&mut self) {
-        if self.flyout_open {
-            self.close_flyout();
-        } else {
+        // The chevron replaces an open Torn card with the hidden icons.
+        let hidden_icons = self.flyout_open && !self.flyout_torn;
+        self.close_flyout();
+        if !hidden_icons {
             self.open_flyout();
         }
+    }
+
+    /// Opens or closes the Torn card, in the flyout's window above the status.
+    fn toggle_torn_card(&mut self) {
+        let card = self.flyout_open && self.flyout_torn;
+        self.close_flyout();
+        if !card {
+            self.flyout_torn = true;
+            self.open_flyout();
+        }
+    }
+
+    fn torn_card() -> Vec<crate::torn::Row> {
+        crate::torn::card(&crate::torn::snapshot(), crate::toggl::now())
     }
 
     fn open_flyout(&mut self) {
@@ -2406,9 +2439,15 @@ impl State {
     /// Sizes the flyout to its icons and centers it above the chevron.
     fn layout_flyout(&mut self) {
         let scale = self.dpi as f32 / 96.0;
-        let (width, height) = logic::flyout_size(self.tray.len());
+        let (width, height, anchor) = if self.flyout_torn {
+            let height = crate::torn::card_height(&Self::torn_card());
+            (crate::torn::CARD_W, height, logic::Part::Torn)
+        } else {
+            let (width, height) = logic::flyout_size(self.tray.len());
+            (width, height, logic::Part::Chevron)
+        };
         let (width, height) = ((width * scale).round() as i32, (height * scale).round() as i32);
-        let Some(chevron) = self.part_rect(logic::Part::Chevron) else {
+        let Some(chevron) = self.part_rect(anchor) else {
             return;
         };
         let mut info = MONITORINFO {
@@ -2435,6 +2474,7 @@ impl State {
             return;
         }
         self.flyout_open = false;
+        self.flyout_torn = false;
         self.flyout_hover = None;
         if matches!(self.tip_target, Some(tray::Tip::Flyout(_))) {
             self.hide_tip();
@@ -2833,9 +2873,7 @@ impl State {
                 return;
             }
             logic::Part::Torn => {
-                unsafe {
-                    let _ = PostMessageW(Some(self.owner), WM_SHOW_NOW, WPARAM(1), LPARAM(0));
-                }
+                self.toggle_torn_card();
                 return;
             }
             logic::Part::Timer => {
@@ -4043,6 +4081,9 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         };
         let scale = s.dpi as f32 / 96.0;
         let cell_at = |s: &State, lp: LPARAM| {
+            if s.flyout_torn {
+                return None;
+            }
             logic::flyout_hit(
                 (lp.0 as i16) as f32 / scale,
                 ((lp.0 >> 16) as i16) as f32 / scale,
@@ -4058,6 +4099,7 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     palette,
                     dpi,
                     flyout_hover,
+                    flyout_torn,
                     flyout_renderer,
                     tip_renderer,
                     tip_text,
@@ -4074,6 +4116,8 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     )
                 } else if tip {
                     tip_renderer.draw_tip(hwnd, *dpi, palette, tip_text)
+                } else if *flyout_torn {
+                    flyout_renderer.draw_torn(hwnd, *dpi, palette, &State::torn_card())
                 } else {
                     flyout_renderer.draw_flyout(
                         hwnd,
@@ -4111,6 +4155,14 @@ unsafe fn popup_wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 s.flyout_hover = None;
                 s.hover_tip(None);
                 let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
+            // A click on the Torn card opens the game.
+            WM_LBUTTONUP if s.flyout_torn => {
+                s.close_flyout();
+                if let Err(error) = crate::launch::open(crate::torn::HOME) {
+                    eprintln!("Dock Torn: {error}");
+                }
                 return LRESULT(0);
             }
             // Like the taskbar's overflow, the flyout closes once an icon is used.

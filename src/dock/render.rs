@@ -49,6 +49,8 @@ struct Formats {
     badge: IDWriteTextFormat,
     /// Tooltips: left-aligned and wrapping.
     tip: IDWriteTextFormat,
+    /// A value at the right edge of a Torn card row.
+    card_value: IDWriteTextFormat,
     /// One line of the window list, clipped at the card's edge.
     row: IDWriteTextFormat,
 }
@@ -189,6 +191,16 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             w!("en-us"),
         )?;
         row.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let card_value = dw.CreateTextFormat(
+            text,
+            None,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            11.5 * scale,
+            w!("en-us"),
+        )?;
+        card_value.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         Ok(Formats {
             letter: format(display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
             time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
@@ -202,6 +214,7 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             matrix: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 14.0)?,
             badge: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 8.0)?,
             tip,
+            card_value,
             row,
         })
     }
@@ -298,6 +311,59 @@ impl Renderer {
 
     pub fn draw_flyout(&mut self, hwnd: HWND, frame: &FlyoutFrame) -> Result<()> {
         self.paint(hwnd, frame.dpi, frame.palette, |target, _| draw_flyout(target, frame))
+    }
+
+    /// The Torn card: a label and a value on each row, and a bar under the rows that have one.
+    pub fn draw_torn(&mut self, hwnd: HWND, dpi: u32, palette: &Palette, rows: &[crate::torn::Row]) -> Result<()> {
+        use crate::torn::CARD_PAD;
+        self.paint(hwnd, dpi, palette, |target, formats| {
+            background(target, palette, 1.0);
+            let size = unsafe { target.rt.GetSize() };
+            let (left, right) = (CARD_PAD, size.width - CARD_PAD);
+            let mut top = CARD_PAD;
+            for row in rows {
+                let line = rect(left, top, right, top + 18.0);
+                let label = if row.detail.is_empty() {
+                    row.label.clone()
+                } else {
+                    format!("{} · {}", row.label, row.detail)
+                };
+                let draw = |words: &str, format: &IDWriteTextFormat| {
+                    let wide: Vec<u16> = words.encode_utf16().collect();
+                    unsafe {
+                        target.rt.DrawText(
+                            &wide,
+                            format,
+                            &line,
+                            &target.brush,
+                            D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                    }
+                };
+                unsafe { target.brush.SetColor(&palette.subtext) };
+                draw(&label, &formats.row);
+                unsafe { target.brush.SetColor(&palette.text) };
+                draw(&row.value, &formats.card_value);
+                if let Some(percent) = row.meter {
+                    let track = rect(left, top + 21.0, right, top + 25.0);
+                    let filled = left + (right - left) * percent.min(100) as f32 / 100.0;
+                    unsafe {
+                        target.brush.SetColor(&palette.scrollbar);
+                        target.rt.FillRoundedRectangle(&rounded(track, 2.0), &target.brush);
+                        if filled > left {
+                            target.brush.SetColor(&palette.accent);
+                            target.rt.FillRoundedRectangle(
+                                &rounded(rect(left, track.top, filled, track.bottom), 2.0),
+                                &target.brush,
+                            );
+                        }
+                    }
+                }
+                top += row.card_height();
+            }
+            Ok(())
+        })
     }
 
     pub fn draw_tip(&mut self, hwnd: HWND, dpi: u32, palette: &Palette, tip: &str) -> Result<()> {
