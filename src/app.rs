@@ -3008,11 +3008,13 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             });
         }
         dock::WM_SHOW_NOW => {
-            with_launcher(|l| {
+            // The dock's Torn status asks for its own panel with 1.
+            let title = if wparam.0 == 1 { "Torn" } else { "Now" };
+            with_launcher(move |l| {
                 l.load_surfaces();
-                if l.surfaces.specs.iter().any(|s| s.title == "Now") {
+                if l.surfaces.specs.iter().any(|s| s.title == title) {
                     l.show();
-                    if let Some(index) = l.surfaces.specs.iter().position(|s| s.title == "Now") {
+                    if let Some(index) = l.surfaces.specs.iter().position(|s| s.title == title) {
                         l.open_surface(index);
                     }
                 } else if let Err(error) = crate::launch::open("ms-actioncenter:") {

@@ -499,6 +499,183 @@ pub fn chips(snapshot: &Snapshot, now: u64) -> Vec<Chip> {
     chips
 }
 
+/// One tile of the launcher's Torn panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Stays the same between updates, so the focus stays on the tile.
+    pub id: &'static str,
+    pub label: String,
+    pub detail: String,
+    pub value: String,
+    /// How full a bar is, 0 to 100.
+    pub meter: Option<u32>,
+    pub glyph: &'static str,
+    /// The page a click opens.
+    pub link: Option<&'static str>,
+    /// Takes the panel's full width.
+    pub wide: bool,
+}
+
+impl Row {
+    fn info(id: &'static str, glyph: &'static str, label: &str, value: impl Into<String>) -> Self {
+        Row {
+            id,
+            label: label.to_string(),
+            detail: String::new(),
+            value: value.into(),
+            meter: None,
+            glyph,
+            link: None,
+            wide: false,
+        }
+    }
+
+    fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
+    }
+
+    fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+}
+
+/// The launcher's Torn panel at `now`.
+pub fn rows(snapshot: &Snapshot, now: u64) -> Vec<Row> {
+    let open = Row {
+        link: Some(HOME),
+        ..Row::info("open", "\u{E774}", "Open Torn", "").wide()
+    };
+    let Some(user) = &snapshot.user else {
+        let value = match &snapshot.error {
+            Some(error) => error.clone(),
+            None if enabled() => "Connecting to Torn...".to_string(),
+            None => "Add torn_api_key to the config".to_string(),
+        };
+        return vec![Row::info("status", "\u{E783}", "Torn", value).wide(), open];
+    };
+    let elapsed = now.saturating_sub(user.fetched);
+    let server_now = user.server_time + elapsed;
+    let flight = user.travel_left.saturating_sub(elapsed);
+    let held = user.until.saturating_sub(server_now);
+    let status = if flight > 0 {
+        format!("Traveling to {}, {}", user.destination, clock(flight))
+    } else if held > 0 && matches!(user.state.as_str(), "Hospital" | "Jail") {
+        format!("{} for {}", user.state, clock(held))
+    } else if user.description.is_empty() {
+        user.state.clone()
+    } else {
+        user.description.clone()
+    };
+    let name = format!("{} [{}]", user.name, user.level);
+    let mut rows = vec![Row::info("status", "\u{E77B}", &name, status).wide()];
+    if let Some(error) = &snapshot.error {
+        rows.push(Row::info("error", "\u{E783}", "Not updated", error.clone()).wide());
+    } else if elapsed > STALE_AFTER {
+        rows.push(Row::info("error", "\u{E783}", "Not updated", format!("for {}", clock(elapsed))).wide());
+    }
+    rows.push(Row::info("cash", "\u{E8C7}", "Cash", money(user.money)));
+    let unread = match (user.messages, user.events) {
+        (0, 0) => "None".to_string(),
+        (messages, events) => format!("{messages} messages, {events} events"),
+    };
+    rows.push(Row::info("unread", "\u{E715}", "Unread", unread));
+    let meter = |id: &'static str, glyph: &'static str, label: &str, bar: Bar, regenerates: bool| {
+        let left = bar.fulltime.saturating_sub(elapsed);
+        // Life and happy are shown as fetched; energy and nerve fill by a known time.
+        let current = if regenerates && left == 0 {
+            bar.current.max(bar.maximum)
+        } else {
+            bar.current
+        };
+        let detail = if !regenerates {
+            String::new()
+        } else if current >= bar.maximum {
+            "full".to_string()
+        } else {
+            format!("full in {}", clock(left))
+        };
+        Row {
+            meter: Some(if bar.maximum > 0 {
+                (current.clamp(0, bar.maximum) * 100 / bar.maximum) as u32
+            } else {
+                0
+            }),
+            ..Row::info(id, glyph, label, format!("{current}/{}", bar.maximum)).detail(detail)
+        }
+    };
+    rows.push(meter("energy", "\u{E945}", "Energy", user.energy, true));
+    rows.push(meter("nerve", "\u{E7C1}", "Nerve", user.nerve, true));
+    rows.push(meter("life", "\u{EB51}", "Life", user.life, false));
+    rows.push(meter("happy", "\u{E76E}", "Happy", user.happy, false));
+    let cooldown = |id: &'static str, glyph: &'static str, label: &str, seconds: u64| {
+        let value = match seconds.saturating_sub(elapsed) {
+            0 => "Ready".to_string(),
+            left => clock(left),
+        };
+        Row::info(id, glyph, label, value)
+    };
+    rows.push(cooldown("drug", "\u{E95E}", "Drug cooldown", user.drug));
+    rows.push(cooldown("medical", "\u{E95E}", "Medical cooldown", user.medical));
+    rows.push(cooldown("booster", "\u{E95E}", "Booster cooldown", user.booster));
+    rows.push(Row::info(
+        "updated",
+        "\u{E72C}",
+        "Updated",
+        format!("{} ago", clock(elapsed)),
+    ));
+    if let Some(faction) = &snapshot.faction {
+        if let Some(war) = war_now(faction, server_now) {
+            rows.push(
+                Row::info(
+                    "war",
+                    "\u{E7FC}",
+                    "Ranked war",
+                    format!("{} : {}", war.ours, war.theirs),
+                )
+                .detail(format!("against {}", war.enemy))
+                .wide(),
+            );
+        } else if let Some(war) = &faction.war
+            && war.start > server_now
+        {
+            rows.push(
+                Row::info(
+                    "war",
+                    "\u{E7FC}",
+                    "Ranked war",
+                    format!("starts in {}", clock(war.start - server_now)),
+                )
+                .detail(format!("against {}", war.enemy))
+                .wide(),
+            );
+        }
+        let chain_left = faction
+            .chain_timeout
+            .saturating_sub(now.saturating_sub(faction.fetched));
+        if faction.chain > 0 && chain_left > 0 {
+            rows.push(Row {
+                meter: Some(
+                    (faction.chain.min(faction.chain_max) * 100)
+                        .checked_div(faction.chain_max)
+                        .unwrap_or(0) as u32,
+                ),
+                ..Row::info(
+                    "chain",
+                    "\u{E71B}",
+                    "Chain",
+                    format!("{}/{}", faction.chain, faction.chain_max),
+                )
+                .detail(format!("breaks in {}", clock(chain_left)))
+                .wide()
+            });
+        }
+    }
+    rows.push(open);
+    rows
+}
+
 /// The tooltip: everything, one line each.
 pub fn tip(snapshot: &Snapshot, now: u64) -> String {
     let mut lines = Vec::new();
@@ -760,6 +937,27 @@ mod tests {
         assert_eq!(idle.width(), CHIP_ICON);
         assert!(timer.width() > idle.width());
         assert_eq!(width(&[idle.clone(), timer.clone()]), idle.width() + timer.width());
+        let panel = rows(&with(user()), 5000);
+        let find = |id: &str| panel.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(find("status").value, "Okay");
+        assert_eq!(find("cash").value, "$145,250,000");
+        assert_eq!(
+            (find("energy").meter, find("energy").value.as_str()),
+            (Some(80), "120/150")
+        );
+        assert_eq!(find("energy").detail, "full in 30:00");
+        assert_eq!(find("happy").meter, Some(100));
+        assert_eq!(find("drug").value, "2:45:10");
+        assert_eq!(panel.last().unwrap().link, Some(HOME));
+        let both = Snapshot {
+            user: Some(user()),
+            faction: Some(parse_faction(FACTION, 1000, 5000).unwrap()),
+            error: None,
+        };
+        let panel = rows(&both, 5000);
+        let chain = panel.iter().find(|row| row.id == "chain").unwrap();
+        assert_eq!((chain.meter, chain.value.as_str()), (Some(48), "120/250"));
+        assert!(panel.iter().any(|row| row.id == "war" && row.value == "15200 : 13400"));
         let tip = tip(&with(user()), 5000);
         assert!(tip.contains("Cash $145,250,000") && tip.contains("Energy 120/150, full in 30:00"));
     }

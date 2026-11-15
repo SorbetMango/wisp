@@ -1,0 +1,6 @@
+title = "Torn"
+description = "Cash, energy, nerve, cooldowns, war and chain in Torn City"
+keywords = ["torn", "torn city"]
+
+[[part]]
+kind = "torn"

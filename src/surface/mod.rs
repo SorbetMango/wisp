@@ -20,7 +20,8 @@ use crate::commands::{Command, State, glyph, media, time};
 use crate::search::{Action, Kind, ResultItem};
 use crate::util;
 
-const BUILT_IN: [(&str, &str); 4] = [
+const BUILT_IN: [(&str, &str); 5] = [
+    ("torn.toml", include_str!("torn.toml")),
     ("wifi.toml", include_str!("wifi.toml")),
     ("bluetooth.toml", include_str!("bluetooth.toml")),
     ("now.toml", include_str!("now.toml")),
@@ -64,6 +65,8 @@ pub enum Part {
     /// One volume per app that plays sound.
     Apps,
     Media,
+    /// The player's status in Torn City. Needs `torn_api_key`.
+    Torn,
     /// Opens a file, folder, URL or `ms-settings:` page.
     Link {
         title: String,
@@ -95,6 +98,11 @@ pub enum Input {
     /// Shows a value, such as the time.
     Info {
         value: String,
+    },
+    /// Shows how full something is, 0 to 100, with its numbers as `text`.
+    Meter {
+        value: u32,
+        text: String,
     },
     Toggle {
         on: bool,
@@ -192,7 +200,7 @@ impl Widget {
     /// The command or action Enter runs, with the cursor at `stop`.
     pub fn activate(&self, stop: usize) -> Option<Action> {
         match &self.input {
-            Input::Info { .. } => None,
+            Input::Info { .. } | Input::Meter { .. } => None,
             Input::Toggle { command, .. } => Some(Action::Command(command.clone())),
             Input::Slider { muted, target, .. } => match target {
                 Target::Master => Some(Action::Command(Command::Mute(!muted))),
@@ -339,7 +347,7 @@ impl Library {
 pub fn first_control(widgets: &[Widget]) -> usize {
     widgets
         .iter()
-        .position(|w| !matches!(w.input, Input::Info { .. }))
+        .position(|w| !matches!(w.input, Input::Info { .. } | Input::Meter { .. }))
         .unwrap_or(0)
 }
 
@@ -363,6 +371,8 @@ pub fn resolve(spec: &Spec, state: &State, filter: &str) -> Vec<Widget> {
                         target: Target::App(pid),
                         ..
                     } => format!("app:{pid}"),
+                    // The Torn part names its own widgets.
+                    _ if !widget.id.is_empty() => widget.id.clone(),
                     // Other parts make at most one widget.
                     _ => format!("part:{index}"),
                 };
@@ -528,6 +538,22 @@ fn widgets(part: &Part, state: &State) -> Vec<Widget> {
             Some(Some(playing)) => vec![media_widget(playing)],
             _ => Vec::new(),
         },
+        Part::Torn => crate::torn::rows(&crate::torn::snapshot(), crate::toggl::now())
+            .into_iter()
+            .map(|row| {
+                let input = match (row.meter, row.link) {
+                    (Some(value), _) => Input::Meter { value, text: row.value },
+                    (None, Some(link)) => Input::Link {
+                        action: Action::Open(link.to_string()),
+                    },
+                    (None, None) => Input::Info { value: row.value },
+                };
+                let mut widget = Widget::new(row.label, row.detail, row.glyph, input);
+                widget.id = format!("torn:{}", row.id);
+                widget.wide = row.wide;
+                widget
+            })
+            .collect(),
         Part::Link { title, target, detail } => {
             vec![Widget::new(
                 title.clone(),

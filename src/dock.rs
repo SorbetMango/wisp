@@ -2832,7 +2832,12 @@ impl State {
                 }
                 return;
             }
-            logic::Part::Torn => crate::torn::HOME,
+            logic::Part::Torn => {
+                unsafe {
+                    let _ = PostMessageW(Some(self.owner), WM_SHOW_NOW, WPARAM(1), LPARAM(0));
+                }
+                return;
+            }
             logic::Part::Timer => {
                 if self.toggl.is_some() {
                     crate::toggl::stop();

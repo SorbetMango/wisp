@@ -1025,6 +1025,38 @@ unsafe fn draw_surface(
                         brush,
                     );
                 }
+                Input::Meter { value, text } => {
+                    let label = if widget.detail.is_empty() {
+                        widget.label.clone()
+                    } else {
+                        format!("{} · {}", widget.label, widget.detail)
+                    };
+                    brush.SetColor(&p.text);
+                    draw_text(
+                        rt,
+                        &label,
+                        &fm.title,
+                        rect(text_x, top + 8.0, right - 104.0, top + 28.0),
+                        brush,
+                    );
+                    brush.SetColor(&p.subtext);
+                    draw_text(
+                        rt,
+                        text,
+                        &fm.hint,
+                        rect(right - 104.0, top + 8.0, right - 16.0, top + 28.0),
+                        brush,
+                    );
+                    let (x0, x1) = nav::slider_track(r);
+                    let (x0, x1) = (x0 + ox, x1 + ox);
+                    let y = top + 40.0;
+                    brush.SetColor(&p.scrollbar);
+                    rt.FillRoundedRectangle(&rounded(rect(x0, y - 3.0, x1, y + 3.0), 3.0), brush);
+                    let at = x0 + (x1 - x0) * (*value).min(100) as f32 / 100.0;
+                    if at > x0 {
+                        rt.FillRoundedRectangle(&rounded(rect(x0, y - 3.0, at, y + 3.0), 3.0), accent);
+                    }
+                }
                 Input::Slider { value, muted, .. } => {
                     let label = if *muted {
                         format!("{} · Muted", widget.label)

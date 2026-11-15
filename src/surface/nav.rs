@@ -40,7 +40,7 @@ pub fn height(widget: &Widget, width: f32) -> f32 {
         };
     }
     match &widget.input {
-        Input::Slider { .. } => 56.0,
+        Input::Slider { .. } | Input::Meter { .. } => 56.0,
         Input::Choice { options, .. } => {
             let names: Vec<&str> = options.iter().map(|(name, _)| name.as_str()).collect();
             let rect = Rect {
