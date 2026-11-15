@@ -21,8 +21,7 @@ use crate::messages::WM_TOGGL;
 use crate::toggl::now;
 
 pub const HOME: &str = "https://www.torn.com/";
-const USER_URL: &str =
-    "https://api.torn.com/user/?selections=bars,travel,cooldowns,profile,money,notifications&comment=Wisp&key=";
+const USER_URL: &str = "https://api.torn.com/user/?selections=bars,travel,cooldowns,profile,money,notifications,icons,education&comment=Wisp&key=";
 const FACTION_URL: &str = "https://api.torn.com/v2/faction/?selections=wars,chain&comment=Wisp&key=";
 const USER_EVERY: u64 = 30;
 const FACTION_EVERY: u64 = 300;
@@ -71,6 +70,71 @@ pub struct User {
     pub money: i64,
     pub messages: u64,
     pub events: u64,
+    /// Seconds left on the education course, when fetched. Zero with no
+    /// course running; `None` if the reply said nothing about education.
+    pub education_left: Option<u64>,
+    /// The status icons of the player's profile, as "Title - details".
+    pub icons: Vec<String>,
+}
+
+impl User {
+    /// The details of the status icon with this title, such as "Racing".
+    fn icon(&self, title: &str) -> Option<&str> {
+        self.icons
+            .iter()
+            .find_map(|icon| icon.strip_prefix(title)?.strip_prefix(" - "))
+    }
+
+    /// The race is over and its result waits to be seen.
+    fn race_finished(&self) -> bool {
+        self.icon("Racing").is_some_and(|race| race.contains("finished"))
+    }
+
+    /// Seconds until the organized crime is ready at `elapsed` seconds after
+    /// the fetch, if the player is in one.
+    fn crime_left(&self, elapsed: u64) -> Option<u64> {
+        let crime = self.icon("Organized Crime")?;
+        Some(duration(crime).unwrap_or(0).saturating_sub(elapsed))
+    }
+
+    /// The bank investment has run its term.
+    fn bank_ready(&self) -> bool {
+        self.icon("Bank Investment")
+            .is_some_and(|bank| duration(bank).is_none())
+    }
+}
+
+/// The time at the end of a status icon's text: "2 hours, 1 minute and 21
+/// seconds" or "02:09:02". `None` if the text ends with no time.
+fn duration(text: &str) -> Option<u64> {
+    let last = text.rsplit(" - ").next()?.trim();
+    let mut seconds = 0;
+    let mut found = false;
+    let mut words = last.split([' ', ',']).filter(|word| !word.is_empty() && *word != "and");
+    while let Some(word) = words.next() {
+        let Ok(count) = word.parse::<u64>() else {
+            return None;
+        };
+        let unit = match words.next()?.trim_end_matches('s') {
+            "day" => 86_400,
+            "hour" => 3600,
+            "minute" => 60,
+            "second" => 1,
+            _ => return None,
+        };
+        seconds += count * unit;
+        found = true;
+    }
+    found.then_some(seconds)
+}
+
+/// "2d 10h" above a day, a clock below.
+fn long_clock(seconds: u64) -> String {
+    if seconds >= 86_400 {
+        format!("{}d {}h", seconds / 86_400, seconds / 3600 % 24)
+    } else {
+        clock(seconds)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -115,6 +179,14 @@ pub enum Icon {
     War,
     Chain,
     Warning,
+    /// The education course is over, or none is running.
+    Education,
+    /// A finished race.
+    Race,
+    /// The organized crime is ready.
+    Crime,
+    /// The bank investment has run its term.
+    Bank,
 }
 
 impl Icon {
@@ -129,6 +201,10 @@ impl Icon {
             Icon::War => "\u{2694}\u{FE0F}",
             Icon::Chain => "\u{26D3}\u{FE0F}",
             Icon::Warning => "\u{26A0}\u{FE0F}",
+            Icon::Education => "\u{1F393}",
+            Icon::Race => "\u{1F3C1}",
+            Icon::Crime => "\u{1F575}\u{FE0F}",
+            Icon::Bank => "\u{1F3E6}",
         }
     }
 }
@@ -354,6 +430,16 @@ pub fn parse_user(body: &str, fetched: u64) -> Result<User, String> {
         money: value["money_onhand"].as_i64().unwrap_or(0),
         messages: number(&value["notifications"]["messages"]),
         events: number(&value["notifications"]["events"]),
+        education_left: value["education_timeleft"].as_u64(),
+        icons: value["icons"]
+            .as_object()
+            .map(|icons| {
+                icons
+                    .values()
+                    .filter_map(|icon| icon.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -469,6 +555,19 @@ pub fn chips(snapshot: &Snapshot, now: u64) -> Vec<Chip> {
     }
     if full(user.nerve) {
         chips.push(Chip::new(Icon::Nerve, ""));
+    }
+    if user.education_left.is_some_and(|left| left <= elapsed) {
+        chips.push(Chip::new(Icon::Education, ""));
+    }
+    // A race's result is collected in the city.
+    if user.race_finished() && flight == 0 && !matches!(user.state.as_str(), "Traveling" | "Abroad") {
+        chips.push(Chip::new(Icon::Race, ""));
+    }
+    if user.crime_left(elapsed) == Some(0) {
+        chips.push(Chip::new(Icon::Crime, ""));
+    }
+    if user.bank_ready() {
+        chips.push(Chip::new(Icon::Bank, ""));
     }
     if let Some(faction) = &snapshot.faction {
         if let Some(war) = war_now(faction, server_now) {
@@ -658,6 +757,26 @@ pub fn rows(snapshot: &Snapshot, now: u64) -> Vec<Row> {
     rows.push(cooldown("drug", "\u{E95E}", "Drug cooldown", user.drug));
     rows.push(cooldown("medical", "\u{E95E}", "Medical cooldown", user.medical));
     rows.push(cooldown("booster", "\u{E95E}", "Booster cooldown", user.booster));
+    if let Some(left) = user.education_left {
+        let value = match left.saturating_sub(elapsed) {
+            0 => "Finished".to_string(),
+            left => long_clock(left),
+        };
+        rows.push(Row::info("education", "\u{E7BE}", "Education", value));
+    }
+    if let Some(left) = user.crime_left(elapsed) {
+        let value = match left {
+            0 => "Ready".to_string(),
+            left => long_clock(left),
+        };
+        rows.push(Row::info("crime", "\u{E716}", "Organized crime", value));
+    }
+    if user.race_finished() {
+        rows.push(Row::info("race", "\u{E7C1}", "Race", "Finished"));
+    }
+    if user.bank_ready() {
+        rows.push(Row::info("bank", "\u{E8C7}", "Bank investment", "Ready"));
+    }
     rows.push(Row::info(
         "updated",
         "\u{E72C}",
@@ -769,6 +888,24 @@ pub fn tip(snapshot: &Snapshot, now: u64) -> String {
         cooldown("Medical", user.medical),
         cooldown("Booster", user.booster)
     ));
+    if let Some(left) = user.education_left {
+        lines.push(match left.saturating_sub(elapsed) {
+            0 => "Education finished".to_string(),
+            left => format!("Education {}", long_clock(left)),
+        });
+    }
+    if let Some(left) = user.crime_left(elapsed) {
+        lines.push(match left {
+            0 => "Organized crime ready".to_string(),
+            left => format!("Organized crime {}", long_clock(left)),
+        });
+    }
+    if user.race_finished() {
+        lines.push("Race finished".to_string());
+    }
+    if user.bank_ready() {
+        lines.push("Bank investment ready".to_string());
+    }
     if let Some(faction) = &snapshot.faction {
         if let Some(war) = war_now(faction, server_now) {
             lines.push(format!("War {} : {} {}", war.ours, war.theirs, war.enemy));
@@ -962,6 +1099,49 @@ mod tests {
         let mut soon = snapshot.clone();
         soon.faction.as_mut().unwrap().war.as_mut().unwrap().start = 1_800_000_000 + 7200;
         assert_eq!(icons(&soon, 5000)[0], (Icon::War, "2:00:00".into()));
+    }
+
+    #[test]
+    fn finished_things_appear_from_the_status_icons() {
+        let reply = USER.replacen(
+            '{',
+            r#"{"education_timeleft":120,"icons":{
+                "icon19":"Education - Currently completing the Criminal Law course - 2 minutes and 0 seconds",
+                "icon18":"Racing - You finished 2nd in the Parkland race and have received 2 racing points!",
+                "icon85":"Organized Crime - Muscle #2 in Honey Trap - 1 minute and 21 seconds",
+                "icon29":"Bank Investment - Current bank investment worth $2 - 65 days, 0 hours, 23 minutes and 53 seconds",
+                "icon45":"Medical Cooldown - 02:09:02 / 07:00:00"},"#,
+            1,
+        );
+        let mut player = parse_user(&reply, 5000).unwrap();
+        assert_eq!(player.education_left, Some(120));
+        assert_eq!(player.crime_left(0), Some(81));
+        assert!(player.race_finished() && !player.bank_ready());
+        assert_eq!(icons(&with(player.clone()), 5000), [(Icon::Race, String::new())]);
+        // The crime is ready after 81 s; the course ends after 120 s, past the stale mark.
+        assert_eq!(
+            icons(&with(player.clone()), 5085),
+            [(Icon::Race, String::new()), (Icon::Crime, String::new())]
+        );
+        player.fetched = 5100;
+        player.education_left = Some(20);
+        assert!(icons(&with(player.clone()), 5120).contains(&(Icon::Education, String::new())));
+        // Abroad, the race's result has to wait.
+        player.state = "Abroad".into();
+        assert!(!icons(&with(player.clone()), 5100).contains(&(Icon::Race, String::new())));
+        player.icons = vec!["Bank Investment - Your investment is ready to be collected".into()];
+        assert!(icons(&with(player.clone()), 5100).contains(&(Icon::Bank, String::new())));
+        let panel = rows(&with(player), 5100);
+        assert!(panel.iter().any(|row| row.id == "education" && row.value == "0:20"));
+        assert!(panel.iter().any(|row| row.id == "bank"));
+        assert_eq!(duration("Loan - Outstanding loan of $23,000,000"), None);
+        assert_eq!(
+            duration("X - 2 days, 10 hours, 38 minutes and 39 seconds"),
+            Some(211_119)
+        );
+        assert_eq!(long_clock(211_119), "2d 10h");
+        // A reply without education says nothing about it.
+        assert_eq!(user().education_left, None);
     }
 
     #[test]
