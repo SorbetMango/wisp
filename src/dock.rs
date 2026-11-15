@@ -432,6 +432,9 @@ struct State {
     /// The Toggl timer has a token, and the entry that runs.
     toggl_enabled: bool,
     toggl: Option<crate::toggl::Running>,
+    /// Torn has an API key, and what its status shows now.
+    torn_enabled: bool,
+    torn: Vec<crate::torn::Chip>,
     radio_worker: status::RadioWorker,
     hover_part: Option<logic::Part>,
     /// The pointer touched the bottom edge, so the dock slid in.
@@ -721,6 +724,8 @@ impl Dock {
             percent_width: 28.0,
             toggl_enabled: false,
             toggl: None,
+            torn_enabled: false,
+            torn: Vec::new(),
             radio_worker: status::RadioWorker::default(),
             hover_part: None,
             revealed: false,
@@ -1155,6 +1160,7 @@ impl Dock {
     /// Shows the Toggl timer as its token and running entry are now.
     pub fn sync_toggl(&mut self) {
         crate::toggl::set_notify(self.hwnd);
+        crate::torn::set_notify(self.hwnd);
         self.update(Some("toggl"), move |s| s.sync_toggl());
     }
 
@@ -1388,6 +1394,7 @@ impl State {
             tray,
             inline,
             flyout_open,
+            torn,
             ..
         } = self;
         let frame = &render::Frame {
@@ -1410,6 +1417,7 @@ impl State {
             inline,
             flyout_open: *flyout_open,
             timer: &timer,
+            torn,
         };
         match rt {
             Some(rt) => renderer.draw_on(rt, frame),
@@ -1660,6 +1668,7 @@ impl State {
         logic::RowLayout {
             launcher: self.search_button,
             timer: self.timer_width(),
+            torn: crate::torn::width(&self.torn),
             apps: logic::AppLayout {
                 count: self.count(),
                 pinned: self.pinned.len().saturating_sub(self.scroll).min(self.count()),
@@ -2156,7 +2165,36 @@ impl State {
         if self.toggl_enabled {
             parts.insert(0, logic::Part::Timer);
         }
+        if self.torn_enabled {
+            parts.insert(0, logic::Part::Torn);
+        }
         parts
+    }
+
+    fn torn_chips() -> Vec<crate::torn::Chip> {
+        crate::torn::chips(&crate::torn::snapshot(), crate::toggl::now())
+    }
+
+    /// Each second: counts Torn's timers down and redraws the running timers.
+    fn tick_modules(&mut self) {
+        if self.torn_enabled {
+            let chips = Self::torn_chips();
+            if chips != self.torn {
+                let resized = crate::torn::width(&chips) != crate::torn::width(&self.torn);
+                self.torn = chips;
+                if resized {
+                    self.hide_tip();
+                    self.hover_part = None;
+                    self.place();
+                }
+            } else if self.toggl.is_none() {
+                // Nothing counts down, so nothing is redrawn.
+                return;
+            }
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
     }
 
     fn timer_width(&self) -> f32 {
@@ -2172,11 +2210,18 @@ impl State {
     fn sync_toggl(&mut self) {
         let enabled = crate::toggl::enabled();
         let running = crate::toggl::running();
-        let resized = self.toggl_enabled != enabled || self.toggl.is_some() != running.is_some();
+        let torn_enabled = crate::torn::enabled();
+        let chips = if torn_enabled { Self::torn_chips() } else { Vec::new() };
+        let resized = self.toggl_enabled != enabled
+            || self.toggl.is_some() != running.is_some()
+            || self.torn_enabled != torn_enabled
+            || crate::torn::width(&chips) != crate::torn::width(&self.torn);
         self.toggl_enabled = enabled;
         self.toggl = running;
+        self.torn_enabled = torn_enabled;
+        self.torn = chips;
         unsafe {
-            if self.toggl.is_some() {
+            if self.toggl.is_some() || self.torn_enabled {
                 SetTimer(Some(self.hwnd), TOGGL_TIMER, 1000, None);
             } else {
                 let _ = KillTimer(Some(self.hwnd), TOGGL_TIMER);
@@ -2288,7 +2333,7 @@ impl State {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
             Some(tray::Tip::Chevron) => self.tray_host.is_none(),
-            Some(tray::Tip::Status(_) | tray::Tip::Timer) => false,
+            Some(tray::Tip::Status(_) | tray::Tip::Timer | tray::Tip::Torn) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
@@ -2688,6 +2733,10 @@ impl State {
                 self.part_rect(part),
             ),
             Some(tray::Tip::Timer) => (self.toggl_tip(), self.part_rect(logic::Part::Timer)),
+            Some(tray::Tip::Torn) => (
+                crate::torn::tip(&crate::torn::snapshot(), crate::toggl::now()),
+                self.part_rect(logic::Part::Torn),
+            ),
             Some(tray::Tip::Chevron) => ("Show hidden icons".to_string(), self.part_rect(logic::Part::Chevron)),
             Some(tray::Tip::Inline(i)) => (
                 self.inline
@@ -2783,6 +2832,7 @@ impl State {
                 }
                 return;
             }
+            logic::Part::Torn => crate::torn::HOME,
             logic::Part::Timer => {
                 if self.toggl.is_some() {
                     crate::toggl::stop();
@@ -3569,7 +3619,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     return LRESULT(0);
                 }
                 WM_TIMER if wp.0 == TOGGL_TIMER => {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    s.tick_modules();
                     return LRESULT(0);
                 }
                 WM_TIMER if wp.0 == CLOCK_TIMER => {
@@ -3711,6 +3761,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
                         Some(logic::Part::Timer) => Some(tray::Tip::Timer),
+                        Some(logic::Part::Torn) => Some(tray::Tip::Torn),
                         _ => None,
                     });
                     s.hover_windows(if hover_part.is_none() { hover } else { None });

@@ -45,6 +45,8 @@ mod taskbar;
 mod theme;
 #[path = "../src/toggl.rs"]
 mod toggl;
+#[path = "../src/torn.rs"]
+mod torn;
 #[path = "../src/tray.rs"]
 mod tray;
 #[path = "../src/tray_host.rs"]

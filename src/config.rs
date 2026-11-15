@@ -61,6 +61,7 @@ pub struct Config {
     pub dock_autohide: bool,
     pub dock_search_button: bool,
     pub toggl_api_token: String,
+    pub torn_api_key: String,
     pub dock_icon_size: usize,
     pub dock_order: Vec<String>,
     pub dock_status_group: Vec<String>,

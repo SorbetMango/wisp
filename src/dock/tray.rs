@@ -23,6 +23,8 @@ pub enum Tip {
     Status(super::logic::Part),
     /// The Toggl timer.
     Timer,
+    /// The Torn status.
+    Torn,
     Chevron,
     /// An icon in the dock, by its inline position.
     Inline(usize),

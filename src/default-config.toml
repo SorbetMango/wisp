@@ -65,6 +65,12 @@ dock_search_button = true
 # private.
 toggl_api_token = ""
 
+# Torn City API key with Limited access, from https://www.torn.com/preferences.php#tab=api.
+# With a key, the dock shows your status before the timer: flights, hospital
+# and jail count down, full energy and nerve, the ranked war and the chain.
+# Keep this file private.
+torn_api_key = ""
+
 # App window list shown when hovering a running app icon:
 # "multiple" (only when the app has multiple windows), "always", or "off".
 window_list = "multiple"

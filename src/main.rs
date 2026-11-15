@@ -29,6 +29,7 @@ mod system;
 mod taskbar;
 mod theme;
 mod toggl;
+mod torn;
 mod tray;
 mod tray_host;
 mod update_notice;

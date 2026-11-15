@@ -546,6 +546,8 @@ pub struct RowLayout {
     pub percent_width: f32,
     /// The Toggl timer's width in DIPs, at the start of the tray block. Zero without it.
     pub timer: f32,
+    /// The Torn status' width in DIPs, before the timer. Zero without it.
+    pub torn: f32,
 }
 
 impl RowLayout {
@@ -558,7 +560,8 @@ impl RowLayout {
                 Section::Launcher => 0.0,
                 Section::Apps => self.apps.count as f32 * SLOT + self.apps.gap(),
                 Section::Tray => {
-                    self.timer
+                    self.torn
+                        + self.timer
                         + self
                             .tray
                             .map_or(0.0, |count| CHEVRON_W + count.min(MAX_INLINE) as f32 * TRAY_W)
@@ -626,12 +629,14 @@ impl RowLayout {
 
     pub fn part_left(self, part: Part, scale: f32) -> Option<f32> {
         let (section, offset) = match part {
-            Part::Timer if self.timer > 0.0 => (Section::Tray, 0.0),
-            Part::Timer => return None,
-            Part::Chevron => (Section::Tray, self.timer),
-            Part::Tray(index) if self.tray.is_some_and(|count| index < count.min(MAX_INLINE)) => {
-                (Section::Tray, self.timer + CHEVRON_W + index as f32 * TRAY_W)
-            }
+            Part::Torn if self.torn > 0.0 => (Section::Tray, 0.0),
+            Part::Timer if self.timer > 0.0 => (Section::Tray, self.torn),
+            Part::Torn | Part::Timer => return None,
+            Part::Chevron => (Section::Tray, self.torn + self.timer),
+            Part::Tray(index) if self.tray.is_some_and(|count| index < count.min(MAX_INLINE)) => (
+                Section::Tray,
+                self.torn + self.timer + CHEVRON_W + index as f32 * TRAY_W,
+            ),
             Part::Tray(_) => return None,
             Part::Status => (Section::Status, 0.0),
             Part::Icon(item) => (Section::Icon(item), 0.0),
@@ -644,6 +649,7 @@ impl RowLayout {
         match part {
             Part::Icon(item) => own_icon_width(item, self.percent_width) * scale,
             Part::Timer => self.timer * scale,
+            Part::Torn => self.torn * scale,
             _ => part.width_scaled(scale),
         }
     }
@@ -785,6 +791,8 @@ pub enum Part {
     Clock,
     /// The Toggl timer, at the start of the tray block.
     Timer,
+    /// The Torn status, before the timer.
+    Torn,
 }
 
 /// The timer while nothing runs: one glyph.
@@ -800,7 +808,7 @@ impl Part {
             Part::Status => STATUS_W,
             Part::Icon(_) => OWN_ICON_W,
             Part::Clock => CLOCK_W,
-            Part::Timer => TIMER_IDLE_W,
+            Part::Timer | Part::Torn => TIMER_IDLE_W,
         }
     }
 
@@ -989,6 +997,7 @@ mod tests {
         let row = RowLayout {
             launcher: true,
             timer: 0.0,
+            torn: 0.0,
             apps: AppLayout { count: 1, pinned: 0 },
             order: DEFAULT_ORDER,
             tray: None,
@@ -1062,6 +1071,7 @@ mod tests {
         let row = RowLayout {
             launcher: true,
             timer: 0.0,
+            torn: 0.0,
             percent_width: 28.0,
             apps: AppLayout { count: 0, pinned: 0 },
             order: DEFAULT_ORDER,
@@ -1132,6 +1142,7 @@ mod tests {
                 let row = RowLayout {
                     launcher: true,
                     timer: 0.0,
+                    torn: 0.0,
                     percent_width: 28.0,
                     apps: AppLayout { count: 0, pinned: 0 },
                     order: DEFAULT_ORDER,
@@ -1235,6 +1246,7 @@ mod tests {
                         let row = RowLayout {
                             launcher: true,
                             timer: 0.0,
+                            torn: 0.0,
                             percent_width: 28.0,
                             status: StatusPlacement::default(),
                             apps: AppLayout { count, pinned },
@@ -1281,6 +1293,7 @@ mod tests {
                 let mut row = RowLayout {
                     launcher: true,
                     timer: 0.0,
+                    torn: 0.0,
                     percent_width: 28.0,
                     status: StatusPlacement {
                         group: [true; 4],
@@ -1310,6 +1323,7 @@ mod tests {
             let row = RowLayout {
                 launcher: true,
                 timer: 0.0,
+                torn: 0.0,
                 percent_width: 28.0,
                 status: StatusPlacement::default(),
                 apps: AppLayout { count: 0, pinned: 0 },
@@ -1488,6 +1502,7 @@ mod tests {
         let row = |timer, tray| RowLayout {
             launcher: true,
             timer,
+            torn: 0.0,
             percent_width: 28.0,
             status: StatusPlacement::default(),
             apps: AppLayout { count: 1, pinned: 0 },
@@ -1500,6 +1515,14 @@ mod tests {
         assert_eq!(timed.part_left(Part::Timer, 1.0), Some(tray));
         assert_eq!(timed.part_width(Part::Timer, 1.0), TIMER_RUNNING_W);
         assert_eq!(timed.part_left(Part::Chevron, 1.0), Some(tray + TIMER_RUNNING_W));
+        // The Torn status comes first and pushes the timer along.
+        let mut both = timed;
+        both.torn = 50.0;
+        assert_eq!(both.part_left(Part::Torn, 1.0), Some(tray));
+        assert_eq!(both.part_width(Part::Torn, 1.0), 50.0);
+        assert_eq!(both.part_left(Part::Timer, 1.0), Some(tray + 50.0));
+        assert_eq!(both.part_left(Part::Chevron, 1.0), Some(tray + 50.0 + TIMER_RUNNING_W));
+        assert_eq!(timed.part_left(Part::Torn, 1.0), None);
         assert!((timed.width(1.0) - plain.width(1.0) - TIMER_RUNNING_W).abs() < 0.01);
         assert_eq!(
             timed.part_hit(tray + 1.0, 10.0, &[Part::Timer, Part::Chevron], 1.0),
@@ -1516,6 +1539,7 @@ mod tests {
         let row = |launcher| RowLayout {
             launcher,
             timer: 0.0,
+            torn: 0.0,
             percent_width: 28.0,
             status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },
@@ -1552,6 +1576,7 @@ mod tests {
             let row = RowLayout {
                 launcher: true,
                 timer: 0.0,
+                torn: 0.0,
                 percent_width: 28.0,
                 status: StatusPlacement::default(),
                 apps: AppLayout { count: 2, pinned: 1 },
@@ -1777,6 +1802,7 @@ mod tests {
         let row = RowLayout {
             launcher: true,
             timer: 0.0,
+            torn: 0.0,
             percent_width: 28.0,
             status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },

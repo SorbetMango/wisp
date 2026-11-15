@@ -654,6 +654,7 @@ impl Launcher {
             dock.set_apps(&self.apps, &self.icons);
             dock.configure(&dock::DockConfig::from(&self.config));
             crate::toggl::configure(&self.config.toggl_api_token);
+            crate::torn::configure(&self.config.torn_api_key);
             dock.sync_toggl();
             // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarWorker::is_active));

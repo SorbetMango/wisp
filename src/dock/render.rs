@@ -37,6 +37,8 @@ struct Formats {
     time: IDWriteTextFormat,
     /// The running Toggl timer's large digits.
     timer: IDWriteTextFormat,
+    /// Color emoji, for the Torn status.
+    emoji: IDWriteTextFormat,
     small: IDWriteTextFormat,
     /// Segoe Fluent Icons, for the search button and the status glyphs.
     search: IDWriteTextFormat,
@@ -136,6 +138,8 @@ pub struct Frame<'a> {
     pub flyout_open: bool,
     /// The running Toggl timer, such as "0:07:05". Empty while none runs.
     pub timer: &'a str,
+    /// The Torn status: what needs attention, or one idle icon.
+    pub torn: &'a [crate::torn::Chip],
 }
 
 /// The notification-area flyout's grid.
@@ -189,6 +193,7 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             letter: format(display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
             time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
             timer: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 20.0)?,
+            emoji: format(w!("Segoe UI Emoji"), DWRITE_FONT_WEIGHT_NORMAL, 16.0)?,
             small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
             search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
             chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
@@ -868,6 +873,42 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                 text(&target.rt, &target.brush, &formats.chevron, glyph, area);
                 continue;
             }
+            Part::Torn => {
+                use crate::torn::{CHIP_ICON, Icon};
+                let (top, bottom) = (TILE_TOP * frame.layout_scale, TILE_BOTTOM * frame.layout_scale);
+                let mut x = left;
+                for chip in frame.torn {
+                    let icon = rect(x, top, x + CHIP_ICON * frame.layout_scale, bottom);
+                    let end = x + chip.width() * frame.layout_scale;
+                    if chip.icon == Icon::Idle {
+                        unsafe { target.brush.SetColor(&p.subtext) };
+                        text(&target.rt, &target.brush, &formats.time, chip.icon.glyph(), icon);
+                    } else {
+                        unsafe { target.brush.SetColor(&p.text) };
+                        // A plane flying home points left.
+                        emoji(
+                            &target.rt,
+                            &target.brush,
+                            &formats.emoji,
+                            chip.icon.glyph(),
+                            icon,
+                            chip.icon == Icon::PlaneHome,
+                        );
+                    }
+                    if !chip.text.is_empty() {
+                        unsafe { target.brush.SetColor(if chip.alert { &RED } else { &p.text }) };
+                        text(
+                            &target.rt,
+                            &target.brush,
+                            &formats.time,
+                            &chip.text,
+                            rect(icon.right, top, end, bottom),
+                        );
+                    }
+                    x = end;
+                }
+                continue;
+            }
             Part::Timer => {
                 let area = rect(
                     left,
@@ -1023,11 +1064,47 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     brush.SetColor(&p.subtext);
                     text(rt, brush, &formats.small, &status.date, lower);
                 }
-                Part::Chevron | Part::Tray(_) | Part::Timer => {}
+                Part::Chevron | Part::Tray(_) | Part::Timer | Part::Torn => {}
             }
         }
     }
     Ok(())
+}
+
+/// Draws emoji in color, mirrored left to right if asked.
+fn emoji(
+    rt: &ID2D1HwndRenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    format: &IDWriteTextFormat,
+    text: &str,
+    area: D2D_RECT_F,
+    mirrored: bool,
+) {
+    use windows_numerics::Matrix3x2;
+    let text: Vec<u16> = text.encode_utf16().collect();
+    unsafe {
+        if mirrored {
+            rt.SetTransform(&Matrix3x2 {
+                M11: -1.0,
+                M12: 0.0,
+                M21: 0.0,
+                M22: 1.0,
+                M31: area.left + area.right,
+                M32: 0.0,
+            });
+        }
+        rt.DrawText(
+            &text,
+            format,
+            &area,
+            brush,
+            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+            DWRITE_MEASURING_MODE_NATURAL,
+        );
+        if mirrored {
+            rt.SetTransform(&Matrix3x2::identity());
+        }
+    }
 }
 
 const RED: D2D1_COLOR_F = D2D1_COLOR_F {
