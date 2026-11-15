@@ -35,6 +35,8 @@ struct Formats {
     /// A fallback tile's initial.
     letter: IDWriteTextFormat,
     time: IDWriteTextFormat,
+    /// The running Toggl timer's large digits.
+    timer: IDWriteTextFormat,
     small: IDWriteTextFormat,
     /// Segoe Fluent Icons, for the search button and the status glyphs.
     search: IDWriteTextFormat,
@@ -132,6 +134,8 @@ pub struct Frame<'a> {
     pub tray: &'a [Shown],
     pub inline: &'a [usize],
     pub flyout_open: bool,
+    /// The running Toggl timer, such as "0:07:05". Empty while none runs.
+    pub timer: &'a str,
 }
 
 /// The notification-area flyout's grid.
@@ -184,6 +188,7 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
         Ok(Formats {
             letter: format(display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
             time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
+            timer: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 20.0)?,
             small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
             search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
             chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
@@ -863,6 +868,23 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                 text(&target.rt, &target.brush, &formats.chevron, glyph, area);
                 continue;
             }
+            Part::Timer => {
+                let area = rect(
+                    left,
+                    TILE_TOP * frame.layout_scale,
+                    right,
+                    TILE_BOTTOM * frame.layout_scale,
+                );
+                if frame.timer.is_empty() {
+                    // The stopwatch glyph: nothing runs.
+                    unsafe { target.brush.SetColor(&p.subtext) };
+                    text(&target.rt, &target.brush, &formats.glyph, "\u{E916}", area);
+                } else {
+                    unsafe { target.brush.SetColor(&p.text) };
+                    text(&target.rt, &target.brush, &formats.timer, frame.timer, area);
+                }
+                continue;
+            }
             Part::Tray(index) => {
                 if let Some(shown) = frame.inline.get(index).and_then(|&i| frame.tray.get(i)) {
                     let middle = (TILE_TOP + TILE_BOTTOM) / 2.0 * frame.layout_scale;
@@ -1001,7 +1023,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     brush.SetColor(&p.subtext);
                     text(rt, brush, &formats.small, &status.date, lower);
                 }
-                Part::Chevron | Part::Tray(_) => {}
+                Part::Chevron | Part::Tray(_) | Part::Timer => {}
             }
         }
     }

@@ -33,6 +33,8 @@ pub const WM_DOCK_WAKE: u32 = WM_APP + 28;
 pub const WM_ARTWORK: u32 = WM_APP + 29;
 /// The volume, mute or default output device changed.
 pub const WM_DOCK_STATUS: u32 = WM_APP + 30;
+/// The Toggl timer started, stopped or failed.
+pub const WM_TOGGL: u32 = WM_APP + 31;
 pub const WM_TASKBAR_SHOW: u32 = WM_APP + 40;
 pub const WM_RECOVERY_DONE: u32 = WM_APP + 41;
 /// The taskbar thread finished a job.

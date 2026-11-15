@@ -28,6 +28,7 @@ mod surface;
 mod system;
 mod taskbar;
 mod theme;
+mod toggl;
 mod tray;
 mod tray_host;
 mod update_notice;

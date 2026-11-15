@@ -21,6 +21,8 @@ pub struct Shown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tip {
     Status(super::logic::Part),
+    /// The Toggl timer.
+    Timer,
     Chevron,
     /// An icon in the dock, by its inline position.
     Inline(usize),

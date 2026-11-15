@@ -66,6 +66,7 @@ use crate::messages::WM_RADIOS;
 use crate::messages::WM_REFRESH;
 pub use crate::messages::WM_SHOW_LAUNCHER;
 pub use crate::messages::WM_SHOW_NOW;
+use crate::messages::WM_TOGGL;
 /// The tray host's icons changed.
 use crate::messages::WM_TRAY_CHANGED;
 /// Shows a notification icon's tooltip after a short hover.
@@ -113,6 +114,8 @@ const HOVER_MS: f32 = 110.0;
 const DESKTOP_TIMER: usize = 106;
 /// Fires as each minute starts, for the clock.
 const CLOCK_TIMER: usize = 109;
+/// Redraws the running Toggl timer each second.
+const TOGGL_TIMER: usize = 110;
 /// A dock that stays visible and isn't in use checks for fullscreen apps at
 /// this rate; its clock, volume and battery update from events.
 const QUIET_POLL_MS: u32 = 500;
@@ -426,6 +429,9 @@ struct State {
     status_placement: logic::StatusPlacement,
     radios: status::Radios,
     percent_width: f32,
+    /// The Toggl timer has a token, and the entry that runs.
+    toggl_enabled: bool,
+    toggl: Option<crate::toggl::Running>,
     radio_worker: status::RadioWorker,
     hover_part: Option<logic::Part>,
     /// The pointer touched the bottom edge, so the dock slid in.
@@ -713,6 +719,8 @@ impl Dock {
             },
             radios: status::Radios::default(),
             percent_width: 28.0,
+            toggl_enabled: false,
+            toggl: None,
             radio_worker: status::RadioWorker::default(),
             hover_part: None,
             revealed: false,
@@ -959,12 +967,13 @@ impl Dock {
     }
 
     pub fn owns_message(msg: u32, wp: WPARAM) -> bool {
-        msg == WM_TIMER && (REFRESH_TIMER..=CLOCK_TIMER).contains(&wp.0)
+        msg == WM_TIMER && (REFRESH_TIMER..=TOGGL_TIMER).contains(&wp.0)
             || matches!(
                 msg,
                 WM_REFRESH
                     | WM_ARTWORK
                     | WM_DOCK_STATUS
+                    | WM_TOGGL
                     | WM_TRAY_CHANGED
                     | WM_RADIOS
                     | WM_INPUT
@@ -1141,6 +1150,12 @@ impl Dock {
             }
             s.refresh();
         });
+    }
+
+    /// Shows the Toggl timer as its token and running entry are now.
+    pub fn sync_toggl(&mut self) {
+        crate::toggl::set_notify(self.hwnd);
+        self.update(Some("toggl"), move |s| s.sync_toggl());
     }
 
     pub fn reload_pins(&mut self) {
@@ -1351,6 +1366,11 @@ impl State {
         let hwnd = self.hwnd;
         let parts = self.parts();
         let layout = self.row_layout();
+        let timer = self
+            .toggl
+            .as_ref()
+            .map(|entry| crate::toggl::elapsed_text(entry.start, crate::toggl::now()))
+            .unwrap_or_default();
         let State {
             renderer,
             items,
@@ -1389,6 +1409,7 @@ impl State {
             tray,
             inline,
             flyout_open: *flyout_open,
+            timer: &timer,
         };
         match rt {
             Some(rt) => renderer.draw_on(rt, frame),
@@ -1638,6 +1659,7 @@ impl State {
     fn row_layout(&self) -> logic::RowLayout {
         logic::RowLayout {
             launcher: self.search_button,
+            timer: self.timer_width(),
             apps: logic::AppLayout {
                 count: self.count(),
                 pinned: self.pinned.len().saturating_sub(self.scroll).min(self.count()),
@@ -2127,10 +2149,58 @@ impl State {
 
     /// The status parts, with the notification area while the dock hosts it.
     fn parts(&self) -> Vec<logic::Part> {
-        self.status.parts(
+        let mut parts = self.status.parts(
             self.tray_host.as_ref().map(|_| self.inline.len()),
             self.status_placement,
-        )
+        );
+        if self.toggl_enabled {
+            parts.insert(0, logic::Part::Timer);
+        }
+        parts
+    }
+
+    fn timer_width(&self) -> f32 {
+        match (self.toggl_enabled, &self.toggl) {
+            (false, _) => 0.0,
+            (true, None) => logic::TIMER_IDLE_W,
+            (true, Some(_)) => logic::TIMER_RUNNING_W,
+        }
+    }
+
+    /// Takes the timer's state from the Toggl worker, resizing the dock when
+    /// the timer appears, starts or stops.
+    fn sync_toggl(&mut self) {
+        let enabled = crate::toggl::enabled();
+        let running = crate::toggl::running();
+        let resized = self.toggl_enabled != enabled || self.toggl.is_some() != running.is_some();
+        self.toggl_enabled = enabled;
+        self.toggl = running;
+        unsafe {
+            if self.toggl.is_some() {
+                SetTimer(Some(self.hwnd), TOGGL_TIMER, 1000, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), TOGGL_TIMER);
+            }
+        }
+        if resized {
+            self.hide_tip();
+            self.hover_part = None;
+            self.place();
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    fn toggl_tip(&self) -> String {
+        if let Some(error) = crate::toggl::error() {
+            return error;
+        }
+        match &self.toggl {
+            Some(entry) if entry.description.is_empty() => "Timer running. Click to stop".to_string(),
+            Some(entry) => format!("{}\nClick to stop", entry.description),
+            None => "Start a Toggl timer".to_string(),
+        }
     }
 
     /// A part's rectangle on screen where the dock rests, in physical pixels.
@@ -2617,6 +2687,7 @@ impl State {
                 self.status.tooltip_for(&self.radios, &self.status_items(part)),
                 self.part_rect(part),
             ),
+            Some(tray::Tip::Timer) => (self.toggl_tip(), self.part_rect(logic::Part::Timer)),
             Some(tray::Tip::Chevron) => ("Show hidden icons".to_string(), self.part_rect(logic::Part::Chevron)),
             Some(tray::Tip::Inline(i)) => (
                 self.inline
@@ -2709,6 +2780,17 @@ impl State {
             logic::Part::Status | logic::Part::Icon(_) => {
                 unsafe {
                     let _ = PostMessageW(Some(self.owner), WM_SHOW_NOW, WPARAM(0), LPARAM(0));
+                }
+                return;
+            }
+            logic::Part::Timer => {
+                if self.toggl.is_some() {
+                    crate::toggl::stop();
+                } else {
+                    // The launcher opens on "t ", ready for what the timer is for.
+                    unsafe {
+                        let _ = PostMessageW(Some(self.owner), WM_SHOW_LAUNCHER, WPARAM(1), LPARAM(0));
+                    }
                 }
                 return;
             }
@@ -3482,6 +3564,14 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     s.update_status();
                     return LRESULT(0);
                 }
+                WM_TOGGL => {
+                    s.sync_toggl();
+                    return LRESULT(0);
+                }
+                WM_TIMER if wp.0 == TOGGL_TIMER => {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                }
                 WM_TIMER if wp.0 == CLOCK_TIMER => {
                     s.update_status();
                     arm_clock(hwnd);
@@ -3620,6 +3710,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
                         Some(part @ (logic::Part::Status | logic::Part::Icon(_))) => Some(tray::Tip::Status(part)),
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
+                        Some(logic::Part::Timer) => Some(tray::Tip::Timer),
                         _ => None,
                     });
                     s.hover_windows(if hover_part.is_none() { hover } else { None });

@@ -544,6 +544,8 @@ pub struct RowLayout {
     pub tray: Option<usize>,
     pub status: StatusPlacement,
     pub percent_width: f32,
+    /// The Toggl timer's width in DIPs, at the start of the tray block. Zero without it.
+    pub timer: f32,
 }
 
 impl RowLayout {
@@ -555,9 +557,12 @@ impl RowLayout {
                 Section::Launcher if self.launcher => SLOT,
                 Section::Launcher => 0.0,
                 Section::Apps => self.apps.count as f32 * SLOT + self.apps.gap(),
-                Section::Tray => self
-                    .tray
-                    .map_or(0.0, |count| CHEVRON_W + count.min(MAX_INLINE) as f32 * TRAY_W),
+                Section::Tray => {
+                    self.timer
+                        + self
+                            .tray
+                            .map_or(0.0, |count| CHEVRON_W + count.min(MAX_INLINE) as f32 * TRAY_W)
+                }
                 Section::Status => {
                     if self.status.group.contains(&true) {
                         STATUS_W
@@ -621,9 +626,11 @@ impl RowLayout {
 
     pub fn part_left(self, part: Part, scale: f32) -> Option<f32> {
         let (section, offset) = match part {
-            Part::Chevron => (Section::Tray, 0.0),
+            Part::Timer if self.timer > 0.0 => (Section::Tray, 0.0),
+            Part::Timer => return None,
+            Part::Chevron => (Section::Tray, self.timer),
             Part::Tray(index) if self.tray.is_some_and(|count| index < count.min(MAX_INLINE)) => {
-                (Section::Tray, CHEVRON_W + index as f32 * TRAY_W)
+                (Section::Tray, self.timer + CHEVRON_W + index as f32 * TRAY_W)
             }
             Part::Tray(_) => return None,
             Part::Status => (Section::Status, 0.0),
@@ -636,6 +643,7 @@ impl RowLayout {
     pub fn part_width(self, part: Part, scale: f32) -> f32 {
         match part {
             Part::Icon(item) => own_icon_width(item, self.percent_width) * scale,
+            Part::Timer => self.timer * scale,
             _ => part.width_scaled(scale),
         }
     }
@@ -775,7 +783,14 @@ pub enum Part {
     Status,
     Icon(StatusItem),
     Clock,
+    /// The Toggl timer, at the start of the tray block.
+    Timer,
 }
+
+/// The timer while nothing runs: one glyph.
+pub const TIMER_IDLE_W: f32 = 38.0;
+/// The running timer: "0:00:00" in large digits.
+pub const TIMER_RUNNING_W: f32 = 96.0;
 
 impl Part {
     pub fn width(self) -> f32 {
@@ -785,6 +800,7 @@ impl Part {
             Part::Status => STATUS_W,
             Part::Icon(_) => OWN_ICON_W,
             Part::Clock => CLOCK_W,
+            Part::Timer => TIMER_IDLE_W,
         }
     }
 
@@ -972,6 +988,7 @@ mod tests {
     fn own_fixed_widths_drive_all_pointer_geometry() {
         let row = RowLayout {
             launcher: true,
+            timer: 0.0,
             apps: AppLayout { count: 1, pinned: 0 },
             order: DEFAULT_ORDER,
             tray: None,
@@ -1044,6 +1061,7 @@ mod tests {
     fn own_icons_cluster_in_visible_order_and_keep_individual_targets() {
         let row = RowLayout {
             launcher: true,
+            timer: 0.0,
             percent_width: 28.0,
             apps: AppLayout { count: 0, pinned: 0 },
             order: DEFAULT_ORDER,
@@ -1113,6 +1131,7 @@ mod tests {
                 let icons = std::array::from_fn(|i| !group[i] && icons_mask & (1 << i) != 0);
                 let row = RowLayout {
                     launcher: true,
+                    timer: 0.0,
                     percent_width: 28.0,
                     apps: AppLayout { count: 0, pinned: 0 },
                     order: DEFAULT_ORDER,
@@ -1215,6 +1234,7 @@ mod tests {
                     for (count, pinned) in [(0, 0), (4, 0), (4, 2), (4, 4)] {
                         let row = RowLayout {
                             launcher: true,
+                            timer: 0.0,
                             percent_width: 28.0,
                             status: StatusPlacement::default(),
                             apps: AppLayout { count, pinned },
@@ -1260,6 +1280,7 @@ mod tests {
             for target in DEFAULT_ORDER {
                 let mut row = RowLayout {
                     launcher: true,
+                    timer: 0.0,
                     percent_width: 28.0,
                     status: StatusPlacement {
                         group: [true; 4],
@@ -1288,6 +1309,7 @@ mod tests {
         for scale in [0.75, 1.0, 1.25, 2.0] {
             let row = RowLayout {
                 launcher: true,
+                timer: 0.0,
                 percent_width: 28.0,
                 status: StatusPlacement::default(),
                 apps: AppLayout { count: 0, pinned: 0 },
@@ -1462,9 +1484,38 @@ mod tests {
     }
 
     #[test]
+    fn timer_sits_before_the_tray_icons() {
+        let row = |timer, tray| RowLayout {
+            launcher: true,
+            timer,
+            percent_width: 28.0,
+            status: StatusPlacement::default(),
+            apps: AppLayout { count: 1, pinned: 0 },
+            order: DEFAULT_ORDER,
+            tray,
+        };
+        let (plain, timed) = (row(0.0, Some(2)), row(TIMER_RUNNING_W, Some(2)));
+        let tray = plain.section_left(Section::Tray, 1.0).unwrap();
+        assert_eq!(plain.part_left(Part::Timer, 1.0), None);
+        assert_eq!(timed.part_left(Part::Timer, 1.0), Some(tray));
+        assert_eq!(timed.part_width(Part::Timer, 1.0), TIMER_RUNNING_W);
+        assert_eq!(timed.part_left(Part::Chevron, 1.0), Some(tray + TIMER_RUNNING_W));
+        assert!((timed.width(1.0) - plain.width(1.0) - TIMER_RUNNING_W).abs() < 0.01);
+        assert_eq!(
+            timed.part_hit(tray + 1.0, 10.0, &[Part::Timer, Part::Chevron], 1.0),
+            Some(Part::Timer)
+        );
+        // Without a hosted tray the timer is the whole block.
+        let alone = row(TIMER_IDLE_W, None);
+        assert!(alone.part_left(Part::Timer, 1.0).is_some());
+        assert!((alone.width(1.0) - row(0.0, None).width(1.0) - TIMER_IDLE_W - separator_width(1.0)).abs() < 0.01);
+    }
+
+    #[test]
     fn hidden_search_button_takes_no_space_and_no_hit() {
         let row = |launcher| RowLayout {
             launcher,
+            timer: 0.0,
             percent_width: 28.0,
             status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },
@@ -1500,6 +1551,7 @@ mod tests {
         for scale in [small, normal, large] {
             let row = RowLayout {
                 launcher: true,
+                timer: 0.0,
                 percent_width: 28.0,
                 status: StatusPlacement::default(),
                 apps: AppLayout { count: 2, pinned: 1 },
@@ -1724,6 +1776,7 @@ mod tests {
         );
         let row = RowLayout {
             launcher: true,
+            timer: 0.0,
             percent_width: 28.0,
             status: StatusPlacement::default(),
             apps: AppLayout { count: 2, pinned: 0 },

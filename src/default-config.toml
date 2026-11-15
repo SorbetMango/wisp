@@ -59,6 +59,12 @@ dock_autohide = true
 # launcher opens with the hotkey only.
 dock_search_button = true
 
+# Toggl Track API token, from the bottom of https://track.toggl.com/profile.
+# With a token, the dock shows a timer before the notification icons: click it
+# to start or stop, or type "t what I'm doing" in the launcher. Keep this file
+# private.
+toggl_api_token = ""
+
 # App window list shown when hovering a running app icon:
 # "multiple" (only when the app has multiple windows), "always", or "off".
 window_list = "multiple"

@@ -653,6 +653,8 @@ impl Launcher {
             dock.pace_frames();
             dock.set_apps(&self.apps, &self.icons);
             dock.configure(&dock::DockConfig::from(&self.config));
+            crate::toggl::configure(&self.config.toggl_api_token);
+            dock.sync_toggl();
             // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarWorker::is_active));
             if self.visible { dock.hide() } else { dock.show() }
@@ -848,6 +850,13 @@ impl Launcher {
 
     fn toggle(&mut self) {
         if self.visible { self.hide() } else { self.show() }
+    }
+
+    /// Starts the query that names a Toggl timer, replacing the last query.
+    fn begin_timer_query(&mut self) {
+        self.editor.select_all();
+        self.editor.insert(crate::toggl::PREFIX);
+        self.update_results();
     }
 
     fn show(&mut self) {
@@ -1303,6 +1312,9 @@ impl Launcher {
                     .search(self.editor.text(), &self.apps, &self.history, &self.config),
             );
         }
+        for (at, row) in crate::toggl::results(self.editor.text()).into_iter().enumerate() {
+            self.base_results.insert(at, row);
+        }
         if self.config.check_for_updates
             && self.editor.text().is_empty()
             && let Some(version) = &self.update_version
@@ -1479,6 +1491,7 @@ impl Launcher {
             }
             Action::Update => launch::update_settings(),
             Action::Copy(text) => system::set_clipboard(self.hwnd, text),
+            Action::Open(target) if crate::toggl::open(target) => Ok(()),
             Action::Open(target) => launch::open(target),
             Action::Shell { command, .. } if command.is_empty() => return,
             Action::Shell {
@@ -3007,7 +3020,14 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             });
         }
         dock::WM_SHOW_LAUNCHER => {
-            with_launcher(Launcher::show);
+            // The dock's Toggl timer asks for the launcher with 1.
+            let timer = wparam.0 == 1;
+            with_launcher(move |launcher| {
+                launcher.show();
+                if timer {
+                    launcher.begin_timer_query();
+                }
+            });
         }
         dock::WM_DOCK_SHOW_TASKBAR => {
             with_launcher(Launcher::peek_taskbar);
