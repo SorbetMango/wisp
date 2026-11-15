@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
@@ -26,8 +26,12 @@ pub const START_LINK: &str = "wisp-toggl:start:";
 pub const STOP_LINK: &str = "wisp-toggl:stop";
 
 const API: &str = "https://api.track.toggl.com/api/v9";
-/// Catches a timer started or stopped in another Toggl app.
-const POLL: Duration = Duration::from_secs(60);
+/// Catches a timer started or stopped in another Toggl app. Toggl's free plan
+/// allows 30 requests an hour, so this leaves most of them for starts and stops.
+const POLL: Duration = Duration::from_secs(600);
+/// After Toggl says the hour's requests are used up, nothing is asked for this long.
+const LIMIT_PAUSE: Duration = Duration::from_secs(3600);
+const LIMIT: &str = "Toggl's hourly request limit is used up. Try again within the hour";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,12 +233,17 @@ fn worker(requests: Receiver<Request>) {
     // The worker's own copy is what Toggl confirmed; the shared one may be ahead of it.
     let mut current: Option<Running> = None;
     let mut workspace: Option<u64> = None;
+    let mut paused: Option<Instant> = None;
     loop {
         let request = match requests.recv_timeout(POLL) {
             Ok(request) => request,
             Err(RecvTimeoutError::Timeout) => Request::Poll,
             Err(RecvTimeoutError::Disconnected) => return,
         };
+        // A start or stop is worth one more try; a poll is not.
+        if matches!(request, Request::Poll) && paused.is_some_and(|until| Instant::now() < until) {
+            continue;
+        }
         let token = lock(&shared().token).clone();
         if token.is_empty() {
             current = None;
@@ -257,9 +266,13 @@ fn worker(requests: Receiver<Request>) {
         match result {
             Ok(entry) => {
                 current = entry;
+                paused = None;
                 *lock(&s.error) = None;
             }
             Err(error) => {
+                if error == LIMIT {
+                    paused = Some(Instant::now() + LIMIT_PAUSE);
+                }
                 eprintln!("Toggl: {error}");
                 *lock(&s.error) = Some(error);
             }
@@ -387,6 +400,7 @@ fn http(token: &str, method: &str, path: &str, body: Option<&str>) -> Result<Str
     match code.trim().parse::<u16>() {
         Ok(code) if (200..300).contains(&code) => Ok(reply.to_string()),
         Ok(403 | 401) => Err("Toggl refused the API token".to_string()),
+        Ok(402 | 429) => Err(LIMIT.to_string()),
         Ok(code) => Err(format!("Toggl answered {code}: {}", reply.trim())),
         Err(_) => Err("Toggl's reply could not be read".to_string()),
     }
