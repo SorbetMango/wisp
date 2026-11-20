@@ -23,6 +23,11 @@ mod tray;
 /// Reserved height in DIPs at the default app icon size.
 pub const DEFAULT_RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
 
+/// The gap below the dock for the launcher at the bottom, in DIPs.
+pub fn margin(config: &crate::config::Config) -> f32 {
+    (config.dock_margin as f32).min(logic::MAX_MARGIN) * logic::layout_scale(config.dock_icon_size as f32)
+}
+
 use crate::deferred::{Deferred, Queue};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -477,6 +482,8 @@ struct State {
     /// Whether the dock hides until the pointer touches a bottom edge. When
     /// false it stays on the primary screen.
     autohide: bool,
+    /// The gap below the dock, in DIPs at the default icon size.
+    margin: f32,
     search_button: bool,
     suspended: bool,
     held_dpi: Option<u32>,
@@ -711,6 +718,7 @@ pub struct DockConfig {
     search: bool,
     autohide: bool,
     screen: ScreenChoice,
+    margin: f32,
 }
 impl From<&crate::config::Config> for DockConfig {
     fn from(config: &crate::config::Config) -> Self {
@@ -721,6 +729,7 @@ impl From<&crate::config::Config> for DockConfig {
         let search = config.dock_search_button;
         let autohide = config.dock_autohide;
         let screen = ScreenChoice::parse(&config.dock_screen);
+        let margin = (config.dock_margin as f32).min(logic::MAX_MARGIN);
         Self {
             placement,
             order,
@@ -729,6 +738,7 @@ impl From<&crate::config::Config> for DockConfig {
             search,
             autohide,
             screen,
+            margin,
         }
     }
 }
@@ -742,6 +752,7 @@ pub struct Dock {
     hooks: Vec<HWINEVENTHOOK>,
     autohide: Cell<bool>,
     app_icon_size: Cell<f32>,
+    margin: Cell<f32>,
 }
 
 impl Dock {
@@ -813,6 +824,7 @@ impl Dock {
             listening: false,
             held: false,
             autohide: true,
+            margin: logic::MARGIN,
             search_button: true,
             suspended: false,
             held_dpi: None,
@@ -905,6 +917,7 @@ impl Dock {
             hooks: Vec::new(),
             autohide: Cell::new(true),
             app_icon_size: Cell::new(logic::DEFAULT_APP_ICON_SIZE),
+            margin: Cell::new(logic::MARGIN),
         };
         // The flyout and tooltips are owned by the dock, so they stay above it.
         let popup = WNDCLASSEXW {
@@ -1125,7 +1138,8 @@ impl Dock {
                 if !IsWindowVisible(s.hwnd).as_bool() {
                     let height = rect.bottom - rect.top;
                     let layout_scale = logic::layout_scale(s.app_icon_size);
-                    rect.top = s.top + height + (logic::margin(layout_scale) * s.dpi as f32 / 96.0).round() as i32;
+                    rect.top =
+                        s.top + height + (logic::margin(s.margin, layout_scale) * s.dpi as f32 / 96.0).round() as i32;
                     rect.bottom = rect.top + height;
                 }
                 let _ = KillTimer(Some(s.hwnd), POLL_TIMER);
@@ -1206,9 +1220,11 @@ impl Dock {
             search,
             autohide,
             screen,
+            margin,
         } = config.clone();
         self.app_icon_size.set(size);
         self.autohide.set(autohide);
+        self.margin.set(margin);
         self.update(Some("configure"), move |s| {
             if s.status_placement == placement
                 && s.order == order
@@ -1217,6 +1233,7 @@ impl Dock {
                 && s.search_button == search
                 && s.autohide == autohide
                 && s.screen == screen
+                && s.margin == margin
             {
                 return;
             }
@@ -1236,6 +1253,7 @@ impl Dock {
             s.search_button = search;
             s.autohide = autohide;
             s.screen = screen;
+            s.margin = margin;
             s.resolve_screen();
             s.away = 0;
             if !autohide && s.visible && !s.suspended && !s.revealed {
@@ -1370,7 +1388,14 @@ impl Dock {
     /// screen, in DIPs: its height and the margins above and below it.
     pub fn reserved_height(&self) -> f32 {
         let scale = logic::layout_scale(self.app_icon_size.get());
-        logic::height(scale) + 2.0 * logic::margin(scale)
+        let margin = self.margin.get();
+        // On the edge, the dock needs no room below it, and none above.
+        logic::height(scale)
+            + if margin > 0.0 {
+                2.0 * logic::margin(margin, scale)
+            } else {
+                0.0
+            }
     }
 
     /// Hides the dock until `show`, such as while the launcher is open.
@@ -2058,7 +2083,8 @@ impl State {
 
     fn slide_offset_at(&self, height: i32, value: f32) -> i32 {
         let layout_scale = logic::layout_scale(self.app_icon_size);
-        ((height + (logic::margin(layout_scale) * self.dpi as f32 / 96.0).round() as i32) as f32 * value).round() as i32
+        ((height + (logic::margin(self.margin, layout_scale) * self.dpi as f32 / 96.0).round() as i32) as f32 * value)
+            .round() as i32
     }
 
     fn step_slide(&mut self) {
@@ -2231,7 +2257,8 @@ impl State {
             self.scroll = scroll;
             let height = (logic::height(layout_scale) * scale).round() as i32;
             let x = info.rcMonitor.left + (info.rcMonitor.right - info.rcMonitor.left - width) / 2;
-            self.top = info.rcMonitor.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
+            self.top =
+                info.rcMonitor.bottom - height - (logic::margin(self.margin, layout_scale) * scale).round() as i32;
             self.left = x;
             self.width = width;
             let y = self.top + self.slide_offset(height);

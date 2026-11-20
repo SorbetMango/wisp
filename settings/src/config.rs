@@ -33,6 +33,8 @@ pub struct Config {
     pub position: String,
     pub dock: bool,
     pub dock_autohide: bool,
+    /// The gap below the dock, 0 to 24 DIPs.
+    pub dock_margin: i64,
     pub dock_search_button: bool,
     pub dock_icon_size: i64,
     /// `#RRGGBB` or `#RRGGBBAA`, or empty for the theme's colors.
@@ -80,6 +82,11 @@ impl Config {
             .filter(|value| *value >= 0)
             .ok_or("dock_icon_size must be a positive whole number of DIP.")?
             .clamp(24, 40);
+        let dock_margin = get("dock_margin")
+            .as_integer()
+            .filter(|value| *value >= 0)
+            .ok_or("dock_margin must be a positive whole number of DIP.")?
+            .min(24);
         let dock_color = string("dock_color")?;
         validate_color(&dock_color)?;
         let max_results = get("max_results")
@@ -126,6 +133,7 @@ impl Config {
             position,
             dock: boolean("dock")?,
             dock_autohide: boolean("dock_autohide")?,
+            dock_margin,
             dock_search_button: boolean("dock_search_button")?,
             dock_icon_size,
             dock_color,
@@ -290,6 +298,9 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         "dock_icon_size" if !value.as_integer().is_some_and(|size| (24..=40).contains(&size)) => {
             return Err("Choose an app icon size between 24 and 40 DIP.".into());
         }
+        "dock_margin" if !value.as_integer().is_some_and(|gap| (0..=24).contains(&gap)) => {
+            return Err("Choose a gap between 0 and 24 DIP.".into());
+        }
         "theme"
         | "backdrop"
         | "max_results"
@@ -301,6 +312,7 @@ fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
         | "dock"
         | "dock_autohide"
         | "dock_search_button"
+        | "dock_margin"
         | "dock_icon_size"
         | "dock_screen"
         | "hide_taskbar" => {}
@@ -512,6 +524,21 @@ mod tests {
         assert!(!store.set("win_key", false.into()).unwrap().win_key);
         assert!(store.set("win_key", "true".into()).is_err());
         assert!(std::fs::read_to_string(&store.path).unwrap().contains("# keep me"));
+    }
+
+    #[test]
+    fn dock_margin_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("config.toml"));
+        std::fs::write(&store.path, "# keep me\n").unwrap();
+        let config = store.load().unwrap();
+        assert_eq!(config.dock_margin, 9);
+        assert_eq!(store.set("dock_margin", 0.into()).unwrap().dock_margin, 0);
+        assert!(store.set("dock_margin", 25.into()).is_err());
+        assert!(store.set("dock_margin", (-1).into()).is_err());
+        assert!(std::fs::read_to_string(&store.path).unwrap().contains("# keep me"));
+        let doc = "dock_margin = 90".parse().unwrap();
+        assert_eq!(Config::from_document(&doc).unwrap().dock_margin, 24);
     }
 
     #[test]

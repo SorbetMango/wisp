@@ -59,6 +59,7 @@ pub struct Config {
     pub hide_taskbar: bool,
     pub dock: bool,
     pub dock_autohide: bool,
+    pub dock_margin: u32,
     pub dock_search_button: bool,
     pub dock_icon_size: usize,
     pub dock_order: Vec<String>,
