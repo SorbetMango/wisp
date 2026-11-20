@@ -108,6 +108,7 @@ pub struct Settings {
     screen_values: Vec<String>,
     results: Entity<SliderState>,
     app_icon_size: Entity<SliderState>,
+    dock_margin: Entity<SliderState>,
     /// Whether Appearance's Advanced section is expanded.
     advanced_open: bool,
     dock_picker: Entity<ColorPickerState>,
@@ -274,6 +275,13 @@ impl Settings {
                 .step(1.)
                 .default_value(config.dock_icon_size as f32)
         });
+        let dock_margin = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(24.)
+                .step(1.)
+                .default_value(config.dock_margin as f32)
+        });
         let dock_picker = cx.new(|cx| ColorPickerState::new(window, cx));
         // Digits only, so a field never holds something that is not a number.
         let digits = regex::Regex::new(r"^[0-9]{0,3}$").unwrap();
@@ -368,6 +376,15 @@ impl Settings {
             }
         })
         .detach();
+        cx.subscribe_in(&dock_margin, window, |this, _, event, window, cx| {
+            if let SliderEvent::Change(value) = event {
+                let value = (value.start().round() as i64).clamp(0, 24);
+                if value != this.config.dock_margin {
+                    this.save("dock_margin", value.into(), window, cx);
+                }
+            }
+        })
+        .detach();
         cx.subscribe_in(&app_icon_size, window, |this, _, event, window, cx| {
             if let SliderEvent::Change(value) = event {
                 let value = (value.start().round() as i64).clamp(24, 40);
@@ -415,6 +432,7 @@ impl Settings {
             screen_values,
             results,
             app_icon_size,
+            dock_margin,
             advanced_open: false,
             dock_picker,
             dock_rgb,
@@ -1109,6 +1127,35 @@ impl Settings {
                             })),
                         p,
                     ))
+                    .child(divider(p))
+                    .child(row(
+                        "Keep windows above the dock",
+                        if self.config.dock_reserve_space {
+                            "Maximized windows stop above the visible dock."
+                        } else {
+                            "The dock stays on top of windows. It hides for fullscreen apps."
+                        },
+                        Switch::new("dock-reserve-space")
+                            .checked(self.config.dock_reserve_space)
+                            .disabled(!self.config.dock || self.config.dock_autohide)
+                            .accessibility_label("Keep windows above the dock")
+                            .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                                this.save("dock_reserve_space", (*enabled).into(), window, cx);
+                            })),
+                        p,
+                    ))
+                    .child(divider(p))
+                    .child(
+                        item(
+                            "Gap below the dock",
+                            match self.config.dock_margin {
+                                0 => "On the edge".to_string(),
+                                gap => format!("{gap} DIP"),
+                            },
+                            p,
+                        )
+                        .child(Slider::new(&self.dock_margin).accessibility_label("Gap below the dock")),
+                    )
                     .child(divider(p))
                     .child(row(
                         "Screen",
