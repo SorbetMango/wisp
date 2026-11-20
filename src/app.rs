@@ -676,7 +676,7 @@ impl Launcher {
     /// taskbar is hidden. A shown taskbar keeps its own space.
     fn sync_reserve(&mut self) {
         let hidden = self.taskbar.as_ref().is_some_and(TaskbarWorker::is_active);
-        let wanted = hidden && self.dock.as_ref().is_some_and(Dock::stays_visible);
+        let wanted = hidden && self.config.dock_reserve_space && self.dock.as_ref().is_some_and(Dock::stays_visible);
         let reserved_height = self
             .dock
             .as_ref()
@@ -1023,7 +1023,12 @@ impl Launcher {
         let left = work.left + (work.right - work.left - width) / 2;
         if self.bottom() {
             // The query box covers the dock's spot, and results grow upward.
-            let bottom = work.bottom - self.px(if self.unified() { 9.0 } else { BOTTOM_MARGIN });
+            let bottom = work.bottom
+                - self.px(if self.unified() {
+                    dock::margin(&self.config)
+                } else {
+                    BOTTOM_MARGIN
+                });
             let available = (bottom - margin - work.top) as f32 * 96.0 / self.dpi as f32;
             self.rows_that_fit = (((available - layout::height(1)) / layout::ROW_H).max(0.0) as usize + 1).max(1);
             self.position = (left, bottom);

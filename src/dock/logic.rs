@@ -304,6 +304,8 @@ pub fn icon_pixels(dpi: u32, size: f32) -> i32 {
 
 pub const HEIGHT: f32 = 56.0;
 pub const MARGIN: f32 = 9.0;
+/// The largest gap below the dock `dock_margin` allows, in DIPs.
+pub const MAX_MARGIN: f32 = 24.0;
 pub const SLOT: f32 = 48.0;
 pub const OWN_ICON_W: f32 = 32.0;
 pub const OWN_INNER_GAP: f32 = 4.0;
@@ -337,8 +339,9 @@ pub fn layout_scale(app_icon_size: f32) -> f32 {
 pub fn height(scale: f32) -> f32 {
     HEIGHT * scale
 }
-pub fn margin(scale: f32) -> f32 {
-    MARGIN * scale
+/// The gap below the dock, from `dock_margin` in DIPs at the default icon size.
+pub fn margin(margin: f32, scale: f32) -> f32 {
+    margin.clamp(0.0, MAX_MARGIN) * scale
 }
 pub fn slot(scale: f32) -> f32 {
     SLOT * scale
@@ -1862,5 +1865,13 @@ mod tests {
         assert_eq!(flyout_hit(49., 49., 6), None);
         assert_eq!(flyout_hit(7., 10., 3), None);
         assert_eq!(flyout_hit(209., 10., 9), None);
+    }
+
+    #[test]
+    fn the_gap_below_the_dock_scales_and_stays_in_range() {
+        assert_eq!(margin(MARGIN, 1.0), 9.0);
+        assert_eq!(margin(0.0, 1.25), 0.0);
+        assert_eq!(margin(8.0, 0.75), 6.0);
+        assert_eq!(margin(100.0, 1.0), MAX_MARGIN);
     }
 }
