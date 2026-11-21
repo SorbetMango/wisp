@@ -164,6 +164,7 @@ Open **Settings** by typing `settings` in the launcher or from Wisp's tray icon,
 | `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
 | `dock` | `true` | Shows the dock |
 | `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
+| `dock_margin` | `9` | The gap below the dock, in DIPs, from 0 to 24. `0` puts the dock on the screen edge. |
 | `dock_screen` | `"pointer"` | `"pointer"` shows the dock on the screen the pointer touches, or the main screen while it stays visible; `"main"`; or a screen chosen in Settings |
 | `dock_search_button` | `true` | Shows the search button at the start of the dock |
 | `window_list` | `"multiple"` | `"multiple"` lists an app's windows on hover when it has more than one; `"always"` or `"off"` |
